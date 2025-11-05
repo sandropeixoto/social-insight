@@ -1,0 +1,11 @@
+# SQLite database files
+/data/*.sqlite
+/data/*.db
+
+# PHP server cache
+*.log
+.phpunit.result.cache
+
+# OS artifacts
+Thumbs.db
+.DS_Store
