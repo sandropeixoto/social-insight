@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../config.php';
+
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -45,6 +47,7 @@ declare(strict_types=1);
     </div>
     <script>
         window.APP_CONFIG = {
+            debug: <?php echo json_encode(APP_DEBUG); ?>,
             endpoints: {
                 groups: 'api/groups.php',
                 messages: 'api/messages.php'

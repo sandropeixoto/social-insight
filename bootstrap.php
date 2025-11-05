@@ -2,12 +2,20 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/config.php';
+
 $databaseDirectory = __DIR__ . DIRECTORY_SEPARATOR . 'data';
 $databasePath = $databaseDirectory . DIRECTORY_SEPARATOR . 'social_insight.sqlite';
 
 if (!is_dir($databaseDirectory) && !mkdir($databaseDirectory, 0775, true) && !is_dir($databaseDirectory)) {
     throw new RuntimeException('Unable to create data directory at ' . $databaseDirectory);
 }
+
+$logPath = $databaseDirectory . DIRECTORY_SEPARATOR . 'php-error.log';
+if (!file_exists($logPath) && !touch($logPath)) {
+    $logPath = ini_get('error_log');
+}
+ini_set('error_log', $logPath);
 
 $initializeSchema = !file_exists($databasePath);
 

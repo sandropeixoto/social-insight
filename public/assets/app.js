@@ -1,4 +1,6 @@
 (() => {
+    const debugMode = Boolean(window.APP_CONFIG?.debug);
+
     const state = {
         groups: [],
         filteredGroups: [],
@@ -6,6 +8,8 @@
         selectedGroupName: null,
         refreshGroupsInterval: null,
         refreshMessagesInterval: null,
+        lastGroupsError: null,
+        lastMessagesError: null,
     };
 
     const elements = {
@@ -20,22 +24,31 @@
         messages: 'api/messages.php',
     };
 
-    elements.groupSearch.addEventListener('input', event => {
-        const term = event.target.value.toLowerCase();
-        state.filteredGroups = state.groups.filter(group => group.name.toLowerCase().includes(term));
-        renderGroups();
-    });
+    if (elements.groupSearch) {
+        elements.groupSearch.addEventListener('input', event => {
+            const term = event.target.value.toLowerCase();
+            state.filteredGroups = state.groups.filter(group => group.name.toLowerCase().includes(term));
+            state.lastGroupsError = null;
+            renderGroups();
+        });
+    }
+
+    if (debugMode) {
+        attachDebugBadge();
+        console.info('[Social Insight] Debug mode enabled.');
+    }
 
     async function loadGroups() {
         try {
             const response = await fetch(endpoints.groups, { credentials: 'same-origin' });
 
             if (!response.ok) {
-                throw new Error(`Erro ao carregar grupos: ${response.status}`);
+                throw new Error(`Erro ao carregar grupos: ${response.status} ${response.statusText}`);
             }
 
             const payload = await response.json();
             state.groups = payload.data ?? [];
+            state.lastGroupsError = null;
 
             const searchTerm = elements.groupSearch.value.trim().toLowerCase();
             state.filteredGroups = searchTerm
@@ -44,7 +57,7 @@
 
             renderGroups();
         } catch (error) {
-            console.error(error);
+            handleGroupsError(error);
         }
     }
 
@@ -60,16 +73,17 @@
             const response = await fetch(url, { credentials: 'same-origin' });
 
             if (!response.ok) {
-                throw new Error(`Erro ao carregar mensagens: ${response.status}`);
+                throw new Error(`Erro ao carregar mensagens: ${response.status} ${response.statusText}`);
             }
 
             const payload = await response.json();
             state.selectedGroupName = payload.group?.name ?? state.selectedGroupName;
+            state.lastMessagesError = null;
 
             renderHeader();
             renderMessages(payload.data ?? []);
         } catch (error) {
-            console.error(error);
+            handleMessagesError(error);
         }
     }
 
@@ -77,9 +91,13 @@
         const fragment = document.createDocumentFragment();
 
         if (!state.filteredGroups.length) {
+            const message = state.lastGroupsError
+                ? `<strong>Erro ao carregar grupos</strong><br>${state.lastGroupsError}`
+                : 'Nenhum grupo localizado.';
+
             const empty = document.createElement('div');
-            empty.className = 'empty-list';
-            empty.textContent = 'Nenhum grupo localizado.';
+            empty.className = state.lastGroupsError ? 'status status--error' : 'empty-list';
+            empty.innerHTML = message;
             elements.groupList.replaceChildren(empty);
             return;
         }
@@ -159,9 +177,13 @@
 
     function renderMessages(messages) {
         if (!messages.length) {
+            const text = state.lastMessagesError
+                ? `<strong>Erro ao carregar mensagens</strong><br>${state.lastMessagesError}`
+                : 'Nenhuma mensagem registrada neste grupo até o momento.';
+
             elements.messageList.innerHTML = `
                 <div class="empty-state">
-                    <p>Nenhuma mensagem registrada neste grupo até o momento.</p>
+                    <p>${text}</p>
                 </div>`;
             return;
         }
@@ -170,7 +192,7 @@
 
         messages.forEach(message => {
             const bubble = document.createElement('article');
-            bubble.className = 'message ';
+            bubble.className = 'message';
             bubble.classList.add(message.is_from_me ? 'is-outbound' : 'is-inbound');
 
             if (message.message_type && message.message_type !== 'text') {
@@ -207,6 +229,7 @@
 
         state.selectedGroupId = groupId;
         state.selectedGroupName = state.groups.find(group => group.id === groupId)?.name ?? null;
+        state.lastMessagesError = null;
 
         renderGroups();
         renderHeader();
@@ -217,6 +240,54 @@
 
         loadMessages(groupId);
         state.refreshMessagesInterval = setInterval(() => loadMessages(groupId), 5000);
+    }
+
+    function handleGroupsError(error) {
+        const message = normalizeErrorMessage(error);
+        state.lastGroupsError = message;
+        console.error('[Social Insight] Falha ao carregar grupos:', error);
+        renderGroups();
+    }
+
+    function handleMessagesError(error) {
+        state.lastMessagesError = normalizeErrorMessage(error);
+        console.error('[Social Insight] Falha ao carregar mensagens:', error);
+        renderMessages([]);
+    }
+
+    function normalizeErrorMessage(error) {
+        if (!error) {
+            return 'Erro inesperado.';
+        }
+
+        if (typeof error === 'string') {
+            return exposeIfDebug(error);
+        }
+
+        if (error instanceof Error) {
+            return exposeIfDebug(error.message);
+        }
+
+        try {
+            return exposeIfDebug(JSON.stringify(error));
+        } catch {
+            return 'Erro desconhecido.';
+        }
+    }
+
+    function exposeIfDebug(message) {
+        if (!debugMode) {
+            return 'Verifique o console do navegador para mais detalhes.';
+        }
+
+        return message;
+    }
+
+    function attachDebugBadge() {
+        const badge = document.createElement('div');
+        badge.className = 'debug-indicator';
+        badge.textContent = 'DEBUG ATIVO';
+        document.body.appendChild(badge);
     }
 
     function formatTime(isoString) {

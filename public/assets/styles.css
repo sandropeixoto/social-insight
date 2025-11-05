@@ -83,6 +83,28 @@ body {
     color: #667781;
 }
 
+.status {
+    padding: 24px 16px;
+    text-align: center;
+    font-size: 14px;
+    display: grid;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 6px;
+    margin: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.status--error {
+    color: #d93025;
+    background: rgba(217, 48, 37, 0.08);
+    border-color: rgba(217, 48, 37, 0.18);
+}
+
+.status--error strong {
+    font-size: 15px;
+}
+
 .group-item {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -240,6 +262,21 @@ body {
 
 .message.is-attachment {
     font-style: italic;
+}
+
+.debug-indicator {
+    position: fixed;
+    inset: auto 16px 16px auto;
+    background: #d93025;
+    color: #fff;
+    font-weight: 600;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+    letter-spacing: 0.08em;
+    z-index: 50;
+    pointer-events: none;
 }
 
 @media (max-width: 960px) {
