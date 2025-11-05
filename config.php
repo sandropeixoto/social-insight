@@ -1,7 +1,5 @@
 <?php
 
-declare(strict_types=1);
-
 // Determines if the application should run in debug mode.
 if (!defined('APP_DEBUG')) {
     $envDebug = getenv('APP_DEBUG') ?: ($_ENV['APP_DEBUG'] ?? null);
