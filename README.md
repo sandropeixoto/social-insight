@@ -24,6 +24,19 @@ A aplicação ficará disponível em `http://localhost:8080`.
 
 Na primeira execução, o arquivo `data/social_insight.sqlite` é criado automaticamente com as tabelas necessárias.
 
+## Integração com o W-API
+
+Configure o arquivo `.env` com os dados fornecidos pela plataforma. A coleção mais recente utiliza:
+
+```ini
+WAPI_BASE_URL=https://api.w-api.app/v1
+WAPI_STATUS_ENDPOINT=/instance/status-instance?instanceId={{id}}
+WAPI_PROFILE_ENDPOINT=/instance/device?instanceId={{id}}
+WAPI_QR_ENDPOINT=/instance/qr-code?instanceId={{id}}&image=enable&syncContacts=disable
+```
+
+Defina também `WAPI_INSTANCE_ID` e `WAPI_AUTH_TOKEN` com os valores da sua instância antes de iniciar a aplicação.
+
 ## Configuração do Webhook
 
 1. **URL pública:** exponha o servidor local (ex: `https://seu-dominio.com/api/webhook.php`) usando um túnel como [ngrok](https://ngrok.com/) ou configure o host diretamente.

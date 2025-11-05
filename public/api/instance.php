@@ -22,9 +22,9 @@ if (!$baseUrl || !$authToken) {
     exit;
 }
 
-$statusEndpoint = resolveEndpoint(env('WAPI_STATUS_ENDPOINT', '/instance/{{id}}/status'), $instanceId);
-$profileEndpoint = resolveEndpoint(env('WAPI_PROFILE_ENDPOINT', '/instance/{{id}}/me'), $instanceId);
-$qrEndpoint = resolveEndpoint(env('WAPI_QR_ENDPOINT', '/instance/{{id}}/qrcode'), $instanceId);
+$statusEndpoint = resolveEndpoint(env('WAPI_STATUS_ENDPOINT', '/instance/status-instance?instanceId={{id}}'), $instanceId);
+$profileEndpoint = resolveEndpoint(env('WAPI_PROFILE_ENDPOINT', '/instance/device?instanceId={{id}}'), $instanceId);
+$qrEndpoint = resolveEndpoint(env('WAPI_QR_ENDPOINT', '/instance/qr-code?instanceId={{id}}&image=enable&syncContacts=disable'), $instanceId);
 
 $client = new WapiClient(
     $baseUrl,
@@ -87,12 +87,24 @@ function resolveEndpoint(?string $template, ?string $instanceId): string
 {
     $path = $template ?: '';
 
-    if (str_contains($path, '{{id}}')) {
+    $placeholders = ['{{id}}', '{{instanceId}}'];
+    $containsPlaceholder = false;
+
+    foreach ($placeholders as $placeholder) {
+        if (str_contains($path, $placeholder)) {
+            $containsPlaceholder = true;
+            break;
+        }
+    }
+
+    if ($containsPlaceholder) {
         if (!$instanceId) {
             throw new InvalidArgumentException('Instance id is required to resolve endpoint template.');
         }
 
-        $path = str_replace('{{id}}', $instanceId, $path);
+        foreach ($placeholders as $placeholder) {
+            $path = str_replace($placeholder, $instanceId, $path);
+        }
     }
 
     return $path ?: '/';
@@ -143,21 +155,30 @@ function normalizeProfile($profile): ?array
         ?? $profile['pushName']
         ?? $profile['displayName']
         ?? $profile['name']
+        ?? ($profile['connectedName'] ?? null)
         ?? null;
 
-    $wid = $profile['wid']
-        ?? $profile['id']
-        ?? ($profile['user'] ?? null);
-
-    if (is_array($wid) && isset($wid['user'])) {
-        $wid = $wid['user'];
+    $rawId = $profile['id'] ?? null;
+    if (is_array($rawId) && isset($rawId['user'])) {
+        $rawId = $rawId['user'];
     }
+
+    $wid = $profile['wid']
+        ?? $rawId
+        ?? ($profile['user'] ?? null)
+        ?? $profile['connectedPhone']
+        ?? $profile['lid']
+        ?? null;
 
     $profilePicture = $profile['profile_picture_url']
         ?? $profile['profilePictureUrl']
         ?? $profile['picture']
         ?? $profile['avatar']
         ?? null;
+
+    $connectedPhone = $profile['connectedPhone']
+        ?? $profile['phone']
+        ?? $rawId;
 
     return [
         'name' => $name,
@@ -166,8 +187,9 @@ function normalizeProfile($profile): ?array
         'profile_picture_url' => $profilePicture,
         'info' => [
             'platform' => $profile['platform'] ?? null,
-            'phone' => $profile['phone'] ?? ($profile['id']['user'] ?? null),
+            'phone' => $connectedPhone,
             'about' => $profile['about'] ?? $profile['status'] ?? null,
+            'lid' => $profile['lid'] ?? null,
         ],
     ];
 }
