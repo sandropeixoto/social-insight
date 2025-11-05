@@ -20,6 +20,15 @@ require_once __DIR__ . '/../config.php';
                     <p>Monitoramento de grupos WhatsApp</p>
                 </div>
             </header>
+            <section class="sidebar__instance" id="instanceStatus" aria-live="polite">
+                <div class="instance-status instance-status--loading">
+                    <span class="instance-status__icon">⌛</span>
+                    <div>
+                        <strong>Verificando instância...</strong>
+                        <p>Buscando status junto à API.</p>
+                    </div>
+                </div>
+            </section>
             <div class="sidebar__search">
                 <input type="search" id="groupSearch" placeholder="Buscar grupos">
             </div>
@@ -48,7 +57,8 @@ require_once __DIR__ . '/../config.php';
             debug: <?php echo json_encode(APP_DEBUG); ?>,
             endpoints: {
                 groups: 'api/groups.php',
-                messages: 'api/messages.php'
+                messages: 'api/messages.php',
+                instance: 'api/instance.php'
             }
         };
     </script>

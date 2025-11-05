@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
     const debugMode = Boolean(window.APP_CONFIG?.debug);
 
     const state = {
@@ -8,8 +8,19 @@
         selectedGroupName: null,
         refreshGroupsInterval: null,
         refreshMessagesInterval: null,
+        refreshInstanceInterval: null,
         lastGroupsError: null,
         lastMessagesError: null,
+        instanceStatus: {
+            connected: null,
+            lastUpdated: null,
+            profile: null,
+            qr: null,
+            rawStatus: null,
+            error: null,
+            profileError: null,
+            qrError: null,
+        },
     };
 
     const elements = {
@@ -17,11 +28,13 @@
         groupSearch: document.getElementById('groupSearch'),
         messageList: document.getElementById('messageList'),
         chatHeader: document.getElementById('chatHeader'),
+        instanceStatus: document.getElementById('instanceStatus'),
     };
 
     const endpoints = window.APP_CONFIG?.endpoints ?? {
         groups: 'api/groups.php',
         messages: 'api/messages.php',
+        instance: 'api/instance.php',
     };
 
     if (elements.groupSearch) {
@@ -85,6 +98,165 @@
         } catch (error) {
             handleMessagesError(error);
         }
+    }
+
+    async function loadInstanceStatus() {
+        if (!elements.instanceStatus || !endpoints.instance) {
+            return;
+        }
+
+        try {
+            const response = await fetch(endpoints.instance, { credentials: 'same-origin' });
+
+            if (!response.ok) {
+                throw new Error(`Erro ao consultar instancia: ${response.status} ${response.statusText}`);
+            }
+
+            const payload = await response.json();
+
+            state.instanceStatus.connected = Boolean(payload.connected);
+            state.instanceStatus.lastUpdated = payload.timestamp ?? new Date().toISOString();
+            state.instanceStatus.profile = payload.profile ?? null;
+            state.instanceStatus.qr = payload.qr_code ?? null;
+            state.instanceStatus.rawStatus = payload.status ?? null;
+            state.instanceStatus.error = payload.error ?? null;
+            state.instanceStatus.profileError = payload.profile_error ?? null;
+            state.instanceStatus.qrError = payload.qr_error ?? null;
+
+            renderInstanceStatus();
+        } catch (error) {
+            state.instanceStatus.error = normalizeErrorMessage(error);
+            state.instanceStatus.connected = null;
+            state.instanceStatus.profile = null;
+            state.instanceStatus.qr = null;
+            state.instanceStatus.profileError = null;
+            state.instanceStatus.qrError = null;
+            console.error('[Social Insight] Falha ao consultar status da instancia:', error);
+            renderInstanceStatus();
+        }
+    }
+
+    function renderInstanceStatus() {
+        const container = elements.instanceStatus;
+
+        if (!container) {
+            return;
+        }
+
+        const status = state.instanceStatus;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'instance-status';
+
+        let icon = '..';
+        let title = 'Verificando instancia...';
+        let description = 'Sincronizando com W-API.';
+
+        if (status.error) {
+            icon = '!!';
+            title = 'Falha ao consultar instancia';
+            description = status.error;
+            wrapper.classList.add('instance-status--error');
+        } else if (status.connected === true) {
+            icon = 'OK';
+            title = 'Instancia conectada';
+            description = 'Sessao ativa no WhatsApp.';
+            wrapper.classList.add('instance-status--connected');
+        } else if (status.connected === false) {
+            icon = 'QR';
+            title = 'Instancia aguardando pareamento';
+            description = 'Escaneie o QR Code abaixo no WhatsApp.';
+            wrapper.classList.add('instance-status--disconnected');
+        } else {
+            wrapper.classList.add('instance-status--loading');
+        }
+
+        const iconElement = document.createElement('span');
+        iconElement.className = 'instance-status__icon';
+        iconElement.textContent = icon;
+
+        const content = document.createElement('div');
+        content.className = 'instance-status__body';
+
+        const titleElement = document.createElement('strong');
+        titleElement.textContent = title;
+
+        const descriptionElement = document.createElement('p');
+        descriptionElement.textContent = description;
+
+        content.append(titleElement, descriptionElement);
+
+        if (status.connected === true && status.profile) {
+            const meta = document.createElement('div');
+            meta.className = 'instance-status__meta';
+
+            if (status.profile.name) {
+                const name = document.createElement('span');
+                name.textContent = `Nome: ${status.profile.name}`;
+                meta.appendChild(name);
+            }
+
+            if (status.profile.info?.phone) {
+                const phone = document.createElement('span');
+                phone.textContent = `Telefone: ${status.profile.info.phone}`;
+                meta.appendChild(phone);
+            }
+
+            if (status.profile.wid) {
+                const wid = document.createElement('span');
+                wid.textContent = `WID: ${status.profile.wid}`;
+                meta.appendChild(wid);
+            }
+
+            if (status.profile.is_business) {
+                const business = document.createElement('span');
+                business.textContent = 'Conta comercial';
+                meta.appendChild(business);
+            }
+
+            content.appendChild(meta);
+
+            if (status.profileError) {
+                const profileError = document.createElement('p');
+                profileError.textContent = `Aviso: ${status.profileError}`;
+                content.appendChild(profileError);
+            }
+        }
+
+        if (status.connected === false) {
+            if (status.qr?.value) {
+                const qr = document.createElement('div');
+                qr.className = 'instance-status__qr';
+
+                const img = document.createElement('img');
+                img.alt = 'QR Code WhatsApp';
+                img.src = status.qr.value;
+                qr.appendChild(img);
+
+                const qrCaption = document.createElement('p');
+                qrCaption.textContent = 'Abra o WhatsApp > Aparelhos conectados > Conectar um aparelho.';
+                qr.appendChild(qrCaption);
+
+                content.appendChild(qr);
+            } else if (status.qrError) {
+                const qrError = document.createElement('p');
+                qrError.textContent = `Nao foi possivel carregar o QR Code: ${status.qrError}`;
+                content.appendChild(qrError);
+            }
+        }
+
+        if (status.lastUpdated) {
+            const lastUpdated = document.createElement('p');
+            lastUpdated.className = 'instance-status__timestamp';
+            const datetime = new Date(status.lastUpdated);
+            const formatted = Number.isNaN(datetime.getTime())
+                ? status.lastUpdated
+                : datetime.toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+            lastUpdated.textContent = `Atualizado as ${formatted}`;
+            content.appendChild(lastUpdated);
+        }
+
+        wrapper.append(iconElement, content);
+        container.replaceChildren(wrapper);
     }
 
     function renderGroups() {
@@ -163,7 +335,7 @@
             elements.chatHeader.innerHTML = `
                 <div class="placeholder">
                     <h2>Selecione um grupo</h2>
-                    <p>Escolha um grupo à esquerda para visualizar as mensagens.</p>
+                    <p>Escolha um grupo a esquerda para visualizar as mensagens.</p>
                 </div>`;
             return;
         }
@@ -171,7 +343,7 @@
         elements.chatHeader.innerHTML = `
             <div>
                 <h2>${state.selectedGroupName ?? 'Grupo'}</h2>
-                <p>Monitoramento em tempo real · Atualize para sincronizar</p>
+                <p>Monitoramento em tempo real - Atualize para sincronizar</p>
             </div>`;
     }
 
@@ -179,7 +351,7 @@
         if (!messages.length) {
             const text = state.lastMessagesError
                 ? `<strong>Erro ao carregar mensagens</strong><br>${state.lastMessagesError}`
-                : 'Nenhuma mensagem registrada neste grupo até o momento.';
+                : 'Nenhuma mensagem registrada neste grupo ate o momento.';
 
             elements.messageList.innerHTML = `
                 <div class="empty-state">
@@ -205,7 +377,7 @@
 
             const text = document.createElement('div');
             text.className = 'message__body';
-            text.textContent = message.message_body || '[mensagem sem conteúdo]';
+            text.textContent = message.message_body || '[mensagem sem conteudo]';
 
             const meta = document.createElement('span');
             meta.className = 'message__meta';
@@ -313,11 +485,17 @@
             return '';
         }
 
-        return value.length > max ? `${value.slice(0, max)}…` : value;
+        return value.length > max ? `${value.slice(0, max)}â€¦` : value;
     }
 
     loadGroups();
     renderHeader();
+    renderInstanceStatus();
+    loadInstanceStatus();
 
     state.refreshGroupsInterval = setInterval(loadGroups, 8000);
+    state.refreshInstanceInterval = setInterval(loadInstanceStatus, 15000);
 })();
+
+
+

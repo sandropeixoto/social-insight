@@ -2,8 +2,26 @@
 
 require_once __DIR__ . '/config.php';
 
-$databaseDirectory = __DIR__ . DIRECTORY_SEPARATOR . 'data';
-$databasePath = $databaseDirectory . DIRECTORY_SEPARATOR . 'social_insight.sqlite';
+$defaultDatabaseDirectory = __DIR__ . DIRECTORY_SEPARATOR . 'data';
+$defaultDatabasePath = $defaultDatabaseDirectory . DIRECTORY_SEPARATOR . 'social_insight.sqlite';
+
+$customPath = env('DB_PATH');
+$databasePath = $defaultDatabasePath;
+
+if (is_string($customPath) && $customPath !== '') {
+    $candidatePath = trim($customPath);
+
+    // Treat relative paths as relative to the project root.
+    $isAbsolute = preg_match('/^(?:[a-zA-Z]:\\\\|\\\\\\\\|\\/)/', $candidatePath) === 1;
+
+    if (!$isAbsolute) {
+        $candidatePath = __DIR__ . DIRECTORY_SEPARATOR . $candidatePath;
+    }
+
+    $databasePath = $candidatePath;
+}
+
+$databaseDirectory = dirname($databasePath);
 
 if (!is_dir($databaseDirectory) && !mkdir($databaseDirectory, 0775, true) && !is_dir($databaseDirectory)) {
     throw new RuntimeException('Unable to create data directory at ' . $databaseDirectory);
