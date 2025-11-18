@@ -32,16 +32,33 @@ Configure o arquivo `.env` com os dados fornecidos pela plataforma. A coleção 
 WAPI_BASE_URL=https://api.w-api.app/v1
 WAPI_STATUS_ENDPOINT=/instance/status-instance?instanceId={{id}}
 WAPI_PROFILE_ENDPOINT=/instance/device?instanceId={{id}}
-WAPI_QR_ENDPOINT=/instance/qr-code?instanceId={{id}}&image=enable&syncContacts=disable
+WAPI_QR_ENDPOINT=/instance/qr-code?instanceId={{id}}&image=disable&syncContacts=disable
+WAPI_FETCH_GROUPS_ENDPOINT=/group/get-all-groups?instanceId={{id}}
+WAPI_FETCH_CHATS_ENDPOINT=/chats/fetch-chats?instanceId={{id}}&perPage=100&page=1
+WAPI_DISCONNECT_ENDPOINT=/instance/disconnect?instanceId={{id}}
 ```
 
 Defina também `WAPI_INSTANCE_ID` e `WAPI_AUTH_TOKEN` com os valores da sua instância antes de iniciar a aplicação.
+
+Para popular a lista de conversas automaticamente em uma nova instância, mantenha `WAPI_AUTO_SYNC_CHATS=true` (valor padrão). A sincronização usa, por padrão, o endpoint `group/get-all-groups`; é possível substituir pelos seus próprios endpoints com `WAPI_FETCH_GROUPS_ENDPOINT` ou `WAPI_FETCH_CHATS_ENDPOINT`, bem como ajustar a paginação (`WAPI_CHATS_PER_PAGE`, `WAPI_CHATS_PAGE`).
 
 ## Configuração do Webhook
 
 1. **URL pública:** exponha o servidor local (ex: `https://seu-dominio.com/api/webhook.php`) usando um túnel como [ngrok](https://ngrok.com/) ou configure o host diretamente.
 2. **Token de verificação:** defina a variável de ambiente `WEBHOOK_VERIFY_TOKEN` com o valor que será configurado no painel do W-API.
 3. **Assinatura do webhook:** o endpoint responde à verificação GET (`hub.challenge`). Para mensagens reais, envie `POST` com o payload recebido do W-API.
+
+### Verificação do Webhook
+
+Durante o cadastro, a plataforma da W-API (ou Meta/WhatsApp Cloud) envia um `GET` para confirmar o webhook. O endpoint aceita os parâmetros tradicionais (`hub_mode`, `hub_verify_token`, `hub_challenge`) ou equivalentes (`mode`, `token`, `challenge`).
+
+Exemplo manual com `curl`:
+
+```bash
+curl "https://seu-dominio.com/api/webhook.php?hub_mode=subscribe&hub_verify_token=seu_token&hub_challenge=123456"
+```
+
+Se o `hub_verify_token` recebido for igual ao valor configurado em `WEBHOOK_VERIFY_TOKEN`, o endpoint responderá com o conteúdo de `hub_challenge` (HTTP 200). Caso contrário, retorna 403.
 
 ### Exemplo de payload (simplificado)
 

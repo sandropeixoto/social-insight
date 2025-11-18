@@ -1,14 +1,9 @@
 <?php
 
 require_once __DIR__ . '/../../bootstrap.php';
+require_once __DIR__ . '/../../app/WapiClient.php';
 
 header('Content-Type: application/json; charset=utf-8');
-
-if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    http_response_code(405);
-    echo json_encode(['error' => 'Method not allowed']);
-    exit;
-}
 
 $baseUrl = env('WAPI_BASE_URL');
 $authToken = env('WAPI_AUTH_TOKEN');
@@ -22,16 +17,27 @@ if (!$baseUrl || !$authToken) {
     exit;
 }
 
-$statusEndpoint = resolveEndpoint(env('WAPI_STATUS_ENDPOINT', '/instance/status-instance?instanceId={{id}}'), $instanceId);
-$profileEndpoint = resolveEndpoint(env('WAPI_PROFILE_ENDPOINT', '/instance/device?instanceId={{id}}'), $instanceId);
-$qrEndpoint = resolveEndpoint(env('WAPI_QR_ENDPOINT', '/instance/qr-code?instanceId={{id}}&image=enable&syncContacts=disable'), $instanceId);
-
 $client = new WapiClient(
     $baseUrl,
     $authToken,
     (int) env('WAPI_REQUEST_TIMEOUT', 15),
     env_bool('WAPI_VERIFY_SSL', true)
 );
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    handleInstanceAction($client, $instanceId);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    http_response_code(405);
+    echo json_encode(['error' => 'Method not allowed']);
+    exit;
+}
+
+$statusEndpoint = resolveEndpoint(env('WAPI_STATUS_ENDPOINT', '/instance/status-instance?instanceId={{id}}'), $instanceId);
+$profileEndpoint = resolveEndpoint(env('WAPI_PROFILE_ENDPOINT', '/instance/device?instanceId={{id}}'), $instanceId);
+$qrEndpoint = resolveEndpoint(env('WAPI_QR_ENDPOINT', '/instance/qr-code?instanceId={{id}}&image=disable&syncContacts=disable'), $instanceId);
 
 $response = [
     'timestamp' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM),
@@ -79,6 +85,73 @@ if ($response['connected']) {
 }
 
 echo json_encode($response, JSON_UNESCAPED_UNICODE);
+
+/**
+ * Handles instance-related actions (POST requests).
+ */
+function handleInstanceAction(WapiClient $client, ?string $instanceId): void
+{
+    $rawBody = file_get_contents('php://input') ?: '';
+    $payload = json_decode($rawBody, true);
+
+    if (!is_array($payload)) {
+        $payload = [];
+    }
+
+    $action = strtolower(trim((string) ($payload['action'] ?? $_POST['action'] ?? '')));
+
+    if ($action === '') {
+        http_response_code(400);
+        echo json_encode(['error' => 'Missing action parameter.'], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+
+    switch ($action) {
+        case 'disconnect':
+            performDisconnect($client, $instanceId);
+            return;
+
+        default:
+            http_response_code(400);
+            echo json_encode(['error' => 'Unsupported action.'], JSON_UNESCAPED_UNICODE);
+            return;
+    }
+}
+
+/**
+ * Executes the disconnect action against W-API.
+ */
+function performDisconnect(WapiClient $client, ?string $instanceId): void
+{
+    if (!$instanceId) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Instance id is required to disconnect.'], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+
+    try {
+        $endpoint = resolveEndpoint(env('WAPI_DISCONNECT_ENDPOINT', '/instance/disconnect?instanceId={{id}}'), $instanceId);
+        $payload = $client->get($endpoint);
+
+        echo json_encode([
+            'status' => 'ok',
+            'action' => 'disconnect',
+            'payload' => $payload,
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $exception) {
+        $statusCode = $exception->getCode();
+        if (!is_int($statusCode) || $statusCode < 400) {
+            $statusCode = 502;
+        }
+
+        http_response_code($statusCode);
+        echo json_encode([
+            'error' => 'Unable to disconnect instance via W-API.',
+            'message' => $exception->getMessage(),
+            'details' => APP_DEBUG ? $exception->getTraceAsString() : null,
+        ], JSON_UNESCAPED_UNICODE);
+    }
+}
 
 /**
  * Resolves placeholders in an endpoint template.
@@ -180,11 +253,16 @@ function normalizeProfile($profile): ?array
         ?? $profile['phone']
         ?? $rawId;
 
+    $isBusiness = filter_var($profile['isBusiness'] ?? $profile['is_business'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
     return [
         'name' => $name,
         'wid' => $wid,
-        'is_business' => filter_var($profile['isBusiness'] ?? $profile['is_business'] ?? false, FILTER_VALIDATE_BOOLEAN),
+        'is_business' => $isBusiness,
         'profile_picture_url' => $profilePicture,
+        'platform' => $profile['platform'] ?? null,
+        'profilePictureUrl' => $profilePicture,
+        'isBusiness' => $isBusiness,
         'info' => [
             'platform' => $profile['platform'] ?? null,
             'phone' => $connectedPhone,
@@ -209,12 +287,15 @@ function normalizeQrCode($payload): ?array
         ?? $payload['qr']
         ?? ($payload['data']['base64'] ?? null);
 
-    if (is_string($image) && str_starts_with($image, 'data:image')) {
-        return ['type' => 'data-uri', 'value' => $image];
-    }
+    if (is_string($image)) {
+        if (str_starts_with($image, 'data:image')) {
+            return ['type' => 'data-uri', 'value' => $image];
+        }
 
-    if (is_string($image) && preg_match('/^[A-Za-z0-9+\/=]+$/', $image)) {
-        return ['type' => 'data-uri', 'value' => 'data:image/png;base64,' . $image];
+        if (preg_match('/^[A-Za-z0-9+\/=\r\n]+$/', $image)) {
+            $base64 = preg_replace('/\s+/', '', $image);
+            return ['type' => 'data-uri', 'value' => 'data:image/png;base64,' . $base64];
+        }
     }
 
     if (isset($payload['url']) && filter_var($payload['url'], FILTER_VALIDATE_URL)) {
@@ -226,78 +307,4 @@ function normalizeQrCode($payload): ?array
     }
 
     return null;
-}
-
-final class WapiClient
-{
-    private string $baseUrl;
-    private string $authToken;
-    private int $timeout;
-    private bool $verifySsl;
-
-    public function __construct(string $baseUrl, string $authToken, int $timeout = 15, bool $verifySsl = true)
-    {
-        $this->baseUrl = rtrim($baseUrl, '/');
-        $this->authToken = $authToken;
-        $this->timeout = max($timeout, 5);
-        $this->verifySsl = $verifySsl;
-    }
-
-    /**
-     * Executes a GET request.
-     */
-    public function get(string $endpoint): array
-    {
-        return $this->request('GET', $endpoint);
-    }
-
-    /**
-     * Issues an HTTP request and returns the decoded JSON response.
-     */
-    private function request(string $method, string $endpoint): array
-    {
-        $url = $this->baseUrl . '/' . ltrim($endpoint, '/');
-
-        $handle = curl_init($url);
-
-        if ($handle === false) {
-            throw new RuntimeException('Unable to initialize cURL session.');
-        }
-
-        curl_setopt_array($handle, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_HTTPHEADER => [
-                'Accept: application/json',
-                'Authorization: Bearer ' . $this->authToken,
-            ],
-            CURLOPT_SSL_VERIFYPEER => $this->verifySsl,
-            CURLOPT_SSL_VERIFYHOST => $this->verifySsl ? 2 : 0,
-        ]);
-
-        $result = curl_exec($handle);
-
-        if ($result === false) {
-            $error = curl_error($handle);
-            curl_close($handle);
-            throw new RuntimeException('W-API request failed: ' . $error);
-        }
-
-        $statusCode = curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-        curl_close($handle);
-
-        $decoded = json_decode($result, true);
-
-        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new UnexpectedValueException('Unexpected response from W-API: ' . json_last_error_msg());
-        }
-
-        if ($statusCode >= 400) {
-            $message = $decoded['message'] ?? $decoded['error'] ?? 'HTTP ' . $statusCode;
-            throw new RuntimeException('W-API responded with error: ' . $message, $statusCode);
-        }
-
-        return is_array($decoded) ? $decoded : [];
-    }
 }

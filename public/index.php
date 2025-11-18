@@ -20,12 +20,20 @@ require_once __DIR__ . '/../config.php';
                     <p>Monitoramento de grupos WhatsApp</p>
                 </div>
             </header>
-            <section class="sidebar__instance" id="instanceStatus" aria-live="polite">
-                <div class="instance-status instance-status--loading">
-                    <span class="instance-status__icon">⌛</span>
-                    <div>
-                        <strong>Verificando instância...</strong>
-                        <p>Buscando status junto à API.</p>
+            <section class="sidebar__instance" data-collapsed="false">
+                <div class="sidebar__instance-header">
+                    <span>Status da instância</span>
+                    <button type="button" id="instanceToggle" class="sidebar__instance-toggle" aria-expanded="true" aria-controls="instanceStatus" title="Recolher painel">
+                        Ocultar detalhes
+                    </button>
+                </div>
+                <div class="sidebar__instance-body" id="instanceStatus" aria-live="polite">
+                    <div class="instance-status instance-status--loading">
+                        <span class="instance-status__icon">⌛</span>
+                        <div>
+                            <strong>Verificando instância...</strong>
+                            <p>Buscando status junto à API.</p>
+                        </div>
                     </div>
                 </div>
             </section>

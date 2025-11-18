@@ -36,6 +36,20 @@ if ($body === false) {
     exit;
 }
 
+$logDirectory = __DIR__ . '/../../data';
+$logFile = $logDirectory . '/webhook.log';
+
+if (is_dir($logDirectory)) {
+    $entry = sprintf(
+        "[%s] %s%s",
+        (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format(DateTimeInterface::ATOM),
+        $body,
+        PHP_EOL
+    );
+
+    @file_put_contents($logFile, $entry, FILE_APPEND);
+}
+
 $payload = json_decode($body, true);
 
 if (!is_array($payload)) {
@@ -164,16 +178,30 @@ function normalizeMessage(array $message, array $contacts): array
     $senderPhone = $message['from']
         ?? $message['author']
         ?? $message['chatId']
+        ?? ($message['sender']['id'] ?? null)
         ?? null;
 
     $senderName = $message['sender_name']
         ?? $message['senderName']
+        ?? ($message['sender']['pushName'] ?? null)
         ?? $message['pushName']
         ?? $message['name']
         ?? ($senderPhone && isset($contacts[$senderPhone]) ? ($contacts[$senderPhone]['profile']['name'] ?? null) : null)
         ?? 'Desconhecido';
 
-    $body = extractBody($message) ?? labelForAttachment($type, $message);
+    $body = extractBody($message);
+
+    if ($body === null && isset($message['msgContent']) && is_array($message['msgContent'])) {
+        $body = extractBody($message['msgContent']);
+    }
+
+    if ($body === null) {
+        $body = labelForAttachment($type, $message);
+
+        if (($message['messageStubType'] ?? '') === 'CIPHERTEXT' && isset($message['messageStubParameters'][0])) {
+            $body .= "\n" . trim((string) $message['messageStubParameters'][0]);
+        }
+    }
 
     $direction = $message['from_me']
         ?? $message['fromMe']

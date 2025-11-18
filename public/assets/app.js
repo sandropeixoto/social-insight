@@ -11,6 +11,11 @@
         refreshInstanceInterval: null,
         lastGroupsError: null,
         lastMessagesError: null,
+        lastInstanceAction: null,
+        instanceActionTimeout: null,
+        isSyncingChats: false,
+        isDisconnecting: false,
+        instanceCollapsed: false,
         instanceStatus: {
             connected: null,
             lastUpdated: null,
@@ -28,7 +33,9 @@
         groupSearch: document.getElementById('groupSearch'),
         messageList: document.getElementById('messageList'),
         chatHeader: document.getElementById('chatHeader'),
+        instanceContainer: document.querySelector('.sidebar__instance'),
         instanceStatus: document.getElementById('instanceStatus'),
+        instanceToggle: document.getElementById('instanceToggle'),
     };
 
     const endpoints = window.APP_CONFIG?.endpoints ?? {
@@ -46,14 +53,30 @@
         });
     }
 
+    if (elements.instanceToggle && elements.instanceContainer) {
+        elements.instanceToggle.addEventListener('click', () => {
+            state.instanceCollapsed = !state.instanceCollapsed;
+            updateInstancePanel();
+        });
+
+        updateInstancePanel();
+    }
+
     if (debugMode) {
         attachDebugBadge();
         console.info('[Social Insight] Debug mode enabled.');
     }
 
-    async function loadGroups() {
+    async function loadGroups(forceRefresh = false) {
         try {
-            const response = await fetch(endpoints.groups, { credentials: 'same-origin' });
+            const url = new URL(endpoints.groups, window.location.href);
+
+            if (forceRefresh) {
+                url.searchParams.set('refresh', '1');
+                url.searchParams.set('_ts', Date.now().toString());
+            }
+
+            const response = await fetch(url, { credentials: 'same-origin' });
 
             if (!response.ok) {
                 throw new Error(`Erro ao carregar grupos: ${response.status} ${response.statusText}`);
@@ -61,7 +84,11 @@
 
             const payload = await response.json();
             state.groups = payload.data ?? [];
-            state.lastGroupsError = null;
+            state.lastGroupsError = payload.meta?.sync?.error ?? null;
+
+            if (debugMode && payload.meta?.sync) {
+                console.info('[Social Insight] Sync metadata:', payload.meta.sync);
+            }
 
             const searchTerm = elements.groupSearch.value.trim().toLowerCase();
             state.filteredGroups = searchTerm
@@ -69,8 +96,10 @@
                 : [...state.groups];
 
             renderGroups();
+            return true;
         } catch (error) {
             handleGroupsError(error);
+            return false;
         }
     }
 
@@ -80,7 +109,7 @@
         }
 
         try {
-            const url = new URL(endpoints.messages, window.location.origin);
+            const url = new URL(endpoints.messages, window.location.href);
             url.searchParams.set('group_id', groupId);
 
             const response = await fetch(url, { credentials: 'same-origin' });
@@ -136,6 +165,77 @@
         }
     }
 
+    async function forceSyncChats() {
+        if (state.isSyncingChats) {
+            return;
+        }
+
+        state.isSyncingChats = true;
+        setInstanceAction();
+        renderInstanceStatus();
+
+        const result = await loadGroups(true);
+
+        if (result && !state.lastGroupsError) {
+            if (state.groups.length === 0) {
+                setInstanceAction('info', 'Nenhuma conversa foi retornada pela API.');
+            } else {
+                setInstanceAction('success', 'Conversas sincronizadas com sucesso.');
+            }
+        } else if (state.lastGroupsError) {
+            setInstanceAction('error', state.lastGroupsError);
+        } else if (!result) {
+            setInstanceAction('error', 'Não foi possível atualizar as conversas.');
+        }
+
+        state.isSyncingChats = false;
+        renderInstanceStatus();
+    }
+
+    async function disconnectInstance() {
+        if (state.isDisconnecting) {
+            return;
+        }
+
+        state.isDisconnecting = true;
+        setInstanceAction();
+        renderInstanceStatus();
+
+        try {
+            const response = await fetch(endpoints.instance, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ action: 'disconnect' }),
+            });
+
+            let payload = {};
+            try {
+                payload = await response.json();
+            } catch {
+                payload = {};
+            }
+
+            if (!response.ok || (payload && payload.error)) {
+                const message = typeof payload?.error === 'string'
+                    ? payload.error
+                    : payload?.message ?? payload?.details ?? `Erro ao desconectar: ${response.status} ${response.statusText}`;
+                throw new Error(message);
+            }
+
+            setInstanceAction('success', 'Instância desconectada. Escaneie o QR Code para reconectar.');
+            await loadInstanceStatus();
+        } catch (error) {
+            console.error('[Social Insight] Falha ao desconectar a instancia:', error);
+            setInstanceAction('error', extractActionError(error));
+        } finally {
+            state.isDisconnecting = false;
+            renderInstanceStatus();
+        }
+    }
+
     function renderInstanceStatus() {
         const container = elements.instanceStatus;
 
@@ -186,25 +286,64 @@
         content.append(titleElement, descriptionElement);
 
         if (status.connected === true && status.profile) {
-            const meta = document.createElement('div');
-            meta.className = 'instance-status__meta';
+            const identity = document.createElement('div');
+            identity.className = 'instance-status__identity';
 
-            if (status.profile.name) {
-                const name = document.createElement('span');
-                name.textContent = `Nome: ${status.profile.name}`;
-                meta.appendChild(name);
+            const avatar = document.createElement('div');
+            avatar.className = 'instance-status__avatar';
+
+            if (status.profile.profile_picture_url) {
+                const img = document.createElement('img');
+                img.src = status.profile.profile_picture_url;
+                img.alt = status.profile.name ? `Foto de ${status.profile.name}` : 'Foto do perfil conectado';
+                avatar.appendChild(img);
+            } else {
+                avatar.classList.add('instance-status__avatar--fallback');
+                const initialsSource = status.profile.name
+                    ?? status.profile.info?.phone
+                    ?? status.profile.wid
+                    ?? 'WA';
+                avatar.textContent = initialsSource.slice(0, 2).toUpperCase();
             }
+
+            const identityInfo = document.createElement('div');
+            identityInfo.className = 'instance-status__identity-info';
+
+            const name = document.createElement('span');
+            name.className = 'instance-status__identity-name';
+            name.textContent = status.profile.name ?? 'Perfil sem nome';
+            identityInfo.appendChild(name);
 
             if (status.profile.info?.phone) {
                 const phone = document.createElement('span');
-                phone.textContent = `Telefone: ${status.profile.info.phone}`;
-                meta.appendChild(phone);
+                phone.className = 'instance-status__identity-phone';
+                phone.textContent = status.profile.info.phone;
+                identityInfo.appendChild(phone);
             }
+
+            if (status.profile.info?.platform) {
+                const platform = document.createElement('span');
+                platform.className = 'instance-status__identity-platform';
+                platform.textContent = `Dispositivo: ${status.profile.info.platform}`;
+                identityInfo.appendChild(platform);
+            }
+
+            identity.append(avatar, identityInfo);
+            content.appendChild(identity);
+
+            const meta = document.createElement('div');
+            meta.className = 'instance-status__meta';
 
             if (status.profile.wid) {
                 const wid = document.createElement('span');
                 wid.textContent = `WID: ${status.profile.wid}`;
                 meta.appendChild(wid);
+            }
+
+            if (status.profile.info?.lid) {
+                const lid = document.createElement('span');
+                lid.textContent = `LID: ${status.profile.info.lid}`;
+                meta.appendChild(lid);
             }
 
             if (status.profile.is_business) {
@@ -213,7 +352,15 @@
                 meta.appendChild(business);
             }
 
-            content.appendChild(meta);
+            if (status.profile.info?.about) {
+                const about = document.createElement('span');
+                about.textContent = `Recado: ${status.profile.info.about}`;
+                meta.appendChild(about);
+            }
+
+            if (meta.childElementCount > 0) {
+                content.appendChild(meta);
+            }
 
             if (status.profileError) {
                 const profileError = document.createElement('p');
@@ -244,6 +391,45 @@
             }
         }
 
+        const actions = document.createElement('div');
+        actions.className = 'instance-status__actions';
+
+        const refreshButton = document.createElement('button');
+        refreshButton.type = 'button';
+        refreshButton.className = 'instance-status__action';
+        refreshButton.textContent = state.isSyncingChats ? 'Sincronizando...' : 'Atualizar conversas';
+        refreshButton.disabled = state.isSyncingChats;
+        refreshButton.addEventListener('click', () => forceSyncChats());
+        actions.appendChild(refreshButton);
+
+        if (status.connected === true) {
+            const disconnectButton = document.createElement('button');
+            disconnectButton.type = 'button';
+            disconnectButton.className = 'instance-status__action instance-status__action--danger';
+            disconnectButton.textContent = state.isDisconnecting ? 'Desconectando...' : 'Desconectar';
+            disconnectButton.disabled = state.isDisconnecting;
+            disconnectButton.addEventListener('click', () => disconnectInstance());
+            actions.appendChild(disconnectButton);
+        }
+
+        content.appendChild(actions);
+
+        if (state.lastInstanceAction?.message) {
+            const note = document.createElement('p');
+            note.className = 'instance-status__note';
+
+            if (state.lastInstanceAction.type === 'error') {
+                note.classList.add('instance-status__note--error');
+            } else if (state.lastInstanceAction.type === 'success') {
+                note.classList.add('instance-status__note--success');
+            } else {
+                note.classList.add('instance-status__note--info');
+            }
+
+            note.textContent = state.lastInstanceAction.message;
+            content.appendChild(note);
+        }
+
         if (status.lastUpdated) {
             const lastUpdated = document.createElement('p');
             lastUpdated.className = 'instance-status__timestamp';
@@ -257,6 +443,7 @@
 
         wrapper.append(iconElement, content);
         container.replaceChildren(wrapper);
+        updateInstancePanel();
     }
 
     function renderGroups() {
@@ -447,6 +634,49 @@
         }
     }
 
+    function extractActionError(error) {
+        if (error instanceof Error && error.message) {
+            return error.message;
+        }
+
+        if (typeof error === 'string') {
+            return error;
+        }
+
+        return normalizeErrorMessage(error);
+    }
+
+    function setInstanceAction(type, message) {
+        if (state.instanceActionTimeout) {
+            clearTimeout(state.instanceActionTimeout);
+            state.instanceActionTimeout = null;
+        }
+
+        if (!type || !message) {
+            state.lastInstanceAction = null;
+            return;
+        }
+
+        state.lastInstanceAction = { type, message };
+        state.instanceActionTimeout = setTimeout(() => {
+            state.lastInstanceAction = null;
+            state.instanceActionTimeout = null;
+            renderInstanceStatus();
+        }, 6000);
+    }
+
+    function updateInstancePanel() {
+        if (!elements.instanceContainer || !elements.instanceToggle) {
+            return;
+        }
+
+        const collapsed = state.instanceCollapsed;
+        elements.instanceContainer.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
+        elements.instanceToggle.textContent = collapsed ? 'Mostrar detalhes' : 'Ocultar detalhes';
+        elements.instanceToggle.setAttribute('aria-expanded', String(!collapsed));
+        elements.instanceToggle.setAttribute('title', collapsed ? 'Expandir painel' : 'Recolher painel');
+    }
+
     function exposeIfDebug(message) {
         if (!debugMode) {
             return 'Verifique o console do navegador para mais detalhes.';
@@ -493,9 +723,6 @@
     renderInstanceStatus();
     loadInstanceStatus();
 
-    state.refreshGroupsInterval = setInterval(loadGroups, 8000);
-    state.refreshInstanceInterval = setInterval(loadInstanceStatus, 15000);
+    state.refreshGroupsInterval = setInterval(() => loadGroups(), 8000);
+    state.refreshInstanceInterval = setInterval(() => loadInstanceStatus(), 15000);
 })();
-
-
-
