@@ -81,21 +81,30 @@ try {
                 $contacts[$contact['wa_id']] = $contact;
             }
 
-            foreach ($value['messages'] ?? [] as $message) {
+            $channelIdentifier = resolveChannelIdentifier($value, $metadata, $messagingProduct);
+            $messages = extractMessagePayloads($value);
+
+            foreach ($messages as $message) {
                 $conversationId = resolveConversationId($message, $value, $metadata);
 
                 if (!$conversationId) {
                     continue;
                 }
 
-                $sentAt = resolveTimestamp($message['timestamp'] ?? null);
+                $sentAt = resolveTimestamp(
+                    $message['timestamp']
+                    ?? $message['sent_at']
+                    ?? $value['moment']
+                    ?? $value['timestamp']
+                    ?? null
+                );
 
                 $groupName = resolveGroupName($message, $contacts, $conversationId);
 
                 $groupId = upsertGroup($pdo, [
                     'wa_id' => $conversationId,
                     'name' => $groupName,
-                    'channel' => $messagingProduct,
+                    'channel' => $channelIdentifier,
                     'last_message_at' => $sentAt,
                 ]);
 
@@ -124,14 +133,27 @@ try {
  */
 function resolveConversationId(array $message, array $value, array $metadata): ?string
 {
-    return $message['group_id']
-        ?? $message['groupId']
-        ?? $message['chat_id']
-        ?? $message['chatId']
-        ?? $message['from']
-        ?? $message['author']
-        ?? $metadata['phone_number_id']
-        ?? null;
+    $candidates = [
+        $message['group_id'] ?? null,
+        $message['groupId'] ?? null,
+        $message['chat_id'] ?? null,
+        $message['chatId'] ?? null,
+        $message['chat']['id'] ?? null,
+        $message['chat']['jid'] ?? null,
+        $message['from'] ?? null,
+        $message['author'] ?? null,
+        $value['chat']['id'] ?? null,
+        $value['chatId'] ?? null,
+        $metadata['phone_number_id'] ?? null,
+    ];
+
+    foreach ($candidates as $candidate) {
+        if (!empty($candidate)) {
+            return (string) $candidate;
+        }
+    }
+
+    return null;
 }
 
 /**
@@ -163,6 +185,8 @@ function resolveGroupName(array $message, array $contacts, string $conversationI
         ?? $message['groupName']
         ?? $message['chat_name']
         ?? $message['chatName']
+        ?? ($message['chat']['name'] ?? null)
+        ?? ($message['chat']['subject'] ?? null)
         ?? $message['name']
         ?? ($contacts[$conversationId]['profile']['name'] ?? null)
         ?? $contacts[array_key_first($contacts)]['profile']['name'] ?? $conversationId;
@@ -228,6 +252,18 @@ function extractBody(array $message): ?string
         return (string) $message['text']['body'];
     }
 
+    if (!empty($message['conversation'])) {
+        return (string) $message['conversation'];
+    }
+
+    if (isset($message['extendedTextMessage']['text'])) {
+        return (string) $message['extendedTextMessage']['text'];
+    }
+
+    if (isset($message['reactionMessage']['text'])) {
+        return (string) $message['reactionMessage']['text'];
+    }
+
     foreach (['message', 'body', 'caption'] as $key) {
         if (!empty($message[$key])) {
             return (string) $message[$key];
@@ -258,4 +294,127 @@ function labelForAttachment(string $type, array $message): string
     }
 
     return '[' . implode(' · ', $parts) . ']';
+}
+
+/**
+ * Normalizes payloads from different providers into a flat list of messages.
+ */
+function extractMessagePayloads(array $value): array
+{
+    $messages = [];
+
+    if (isset($value['messages']) && is_array($value['messages'])) {
+        foreach ($value['messages'] as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+
+            $messages[] = mergeMessageContext($message, $value);
+        }
+    }
+
+    if (!empty($messages)) {
+        return $messages;
+    }
+
+    if (isset($value['msgContent']) && is_array($value['msgContent'])) {
+        return [mergeMessageContext($value['msgContent'], $value)];
+    }
+
+    if (!empty($value['event'])) {
+        return [mergeMessageContext($value, $value)];
+    }
+
+    return [];
+}
+
+/**
+ * Adds contextual data (chat, sender, identifiers) to a message array.
+ */
+function mergeMessageContext(array $message, array $value): array
+{
+    if (!isset($message['id']) && isset($value['messageId'])) {
+        $message['id'] = $value['messageId'];
+    }
+
+    if (!isset($message['wa_message_id']) && isset($value['messageId'])) {
+        $message['wa_message_id'] = $value['messageId'];
+    }
+
+    if (!isset($message['fromMe']) && isset($value['fromMe'])) {
+        $message['fromMe'] = $value['fromMe'];
+    }
+
+    if (!isset($message['from_me']) && isset($value['from_me'])) {
+        $message['from_me'] = $value['from_me'];
+    }
+
+    if (!isset($message['timestamp']) && isset($value['moment'])) {
+        $message['timestamp'] = $value['moment'];
+    }
+
+    if (isset($value['chat']) && is_array($value['chat'])) {
+        $existingChat = isset($message['chat']) && is_array($message['chat']) ? $message['chat'] : [];
+        $message['chat'] = array_merge($value['chat'], $existingChat);
+    }
+
+    if (!isset($message['chat_id']) && isset($value['chat']['id'])) {
+        $message['chat_id'] = $value['chat']['id'];
+    }
+
+    if (!isset($message['group_id']) && isset($value['chat']['id'])) {
+        $message['group_id'] = $value['chat']['id'];
+    }
+
+    if (isset($value['sender']) && is_array($value['sender'])) {
+        $existingSender = isset($message['sender']) && is_array($message['sender']) ? $message['sender'] : [];
+        $message['sender'] = array_merge($value['sender'], $existingSender);
+    }
+
+    if (!isset($message['from']) && isset($value['sender']['id'])) {
+        $message['from'] = $value['sender']['id'];
+    }
+
+    if (!isset($message['pushName']) && isset($value['sender']['pushName'])) {
+        $message['pushName'] = $value['sender']['pushName'];
+    }
+
+    return $message;
+}
+
+/**
+ * Attempts to determine the channel identifier (connected phone or fallback).
+ */
+function resolveChannelIdentifier(array $value, array $metadata, string $fallback): string
+{
+    $candidates = [
+        $value['connectedPhone'] ?? null,
+        $value['connected_phone'] ?? null,
+        $metadata['phone_number_id'] ?? null,
+        $metadata['display_phone_number'] ?? null,
+    ];
+
+    foreach ($candidates as $candidate) {
+        $normalized = normalizeDigits($candidate);
+
+        if ($normalized !== null) {
+            return $normalized;
+        }
+    }
+
+    return $fallback;
+}
+
+/**
+ * Removes non-numeric characters from phone identifiers.
+ */
+function normalizeDigits($value): ?string
+{
+    if ($value === null) {
+        return null;
+    }
+
+    $digits = preg_replace('/\D+/', '', (string) $value);
+
+    return $digits !== '' ? $digits : null;
 }
