@@ -61,15 +61,7 @@ if ($forceSync || ($autoSync && count($groups) === 0)) {
 }
 
 $payload = [
-    'data' => array_map(static fn (array $group): array => [
-        'id' => (int) $group['id'],
-        'wa_id' => $group['wa_id'],
-        'name' => $group['name'],
-        'channel' => $group['channel'],
-        'last_message_body' => $group['last_message_body'],
-        'last_message_sent_at' => $group['last_message_sent_at'],
-        'message_count' => (int) $group['message_count'],
-    ], $groups),
+    'data' => array_map(static fn (array $group): array => formatGroupForResponse($group), $groups),
 ];
 
 if ($syncMeta !== null) {
@@ -120,7 +112,7 @@ function fetchStoredGroups(PDO $pdo, ?string $connectedPhone): array
     $query = 'SELECT
             g.id,
             g.wa_id,
-            COALESCE(g.name, g.wa_id) AS name,
+            g.name,
             g.channel,
             g.last_message_at,
             (
@@ -141,7 +133,22 @@ function fetchStoredGroups(PDO $pdo, ?string $connectedPhone): array
                 SELECT COUNT(*)
                 FROM messages
                 WHERE group_id = g.id
-            ) AS message_count
+            ) AS message_count,
+            (
+                SELECT sender_name
+                FROM messages
+                WHERE group_id = g.id
+                  AND is_from_me = 0
+                  AND sender_name IS NOT NULL
+                  AND TRIM(sender_name) <> \'\'
+                ORDER BY sent_at DESC
+                LIMIT 1
+            ) AS last_sender_name,
+            CASE
+                WHEN LOWER(g.wa_id) LIKE \'%@g.us\' THEN \'group\'
+                WHEN LOWER(g.wa_id) LIKE \'%@broadcast%\' THEN \'group\'
+                ELSE \'contact\'
+            END AS conversation_type
          FROM groups g';
 
     $params = [];
@@ -465,4 +472,98 @@ function resolveChatTimestamp($value): ?string
     } catch (Exception $exception) {
         return null;
     }
+}
+
+/**
+ * Maps a database row into the API response format.
+ */
+function formatGroupForResponse(array $group): array
+{
+    $type = detectConversationType($group['conversation_type'] ?? null, $group['wa_id'] ?? null);
+
+    return [
+        'id' => (int) $group['id'],
+        'wa_id' => $group['wa_id'],
+        'name' => resolveDisplayName($group, $type),
+        'channel' => $group['channel'],
+        'type' => $type,
+        'is_group' => $type === 'group',
+        'last_message_body' => $group['last_message_body'],
+        'last_message_sent_at' => $group['last_message_sent_at'],
+        'message_count' => (int) $group['message_count'],
+    ];
+}
+
+/**
+ * Determines the best label to show for a conversation.
+ */
+function resolveDisplayName(array $group, string $type): string
+{
+    $name = is_string($group['name'] ?? null) ? trim($group['name']) : '';
+
+    if ($name !== '') {
+        if ($type === 'group') {
+            $lastSender = trim((string) ($group['last_sender_name'] ?? ''));
+
+            if ($lastSender !== '' && strcasecmp($lastSender, $name) === 0) {
+                $name = '';
+            }
+        }
+    }
+
+    if ($name !== '') {
+        return $name;
+    }
+
+    if ($type === 'contact' && isset($group['last_sender_name'])) {
+        $sender = trim((string) $group['last_sender_name']);
+
+        if ($sender !== '') {
+            return $sender;
+        }
+    }
+
+    return formatWaId($group['wa_id'] ?? null);
+}
+
+/**
+ * Formats a WA id removing protocol suffixes for display.
+ */
+function formatWaId(?string $waId): string
+{
+    if ($waId === null || $waId === '') {
+        return 'Conversa sem nome';
+    }
+
+    $label = $waId;
+
+    if (str_contains($label, '@')) {
+        $label = strstr($label, '@', true) ?: $label;
+    }
+
+    $digitsOnly = preg_replace('/\D+/', '', $label);
+
+    if ($digitsOnly !== '' && strlen($digitsOnly) >= 6) {
+        return '+' . ltrim($digitsOnly, '0');
+    }
+
+    return $label;
+}
+
+/**
+ * Returns "group" or "contact" based on the WA identifier.
+ */
+function detectConversationType($precomputed, ?string $waId): string
+{
+    if (is_string($precomputed) && $precomputed !== '') {
+        return $precomputed;
+    }
+
+    $normalized = strtolower((string) $waId);
+
+    if (str_contains($normalized, '@g.us') || str_contains($normalized, '@broadcast')) {
+        return 'group';
+    }
+
+    return 'contact';
 }

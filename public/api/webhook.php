@@ -181,15 +181,53 @@ function resolveTimestamp(null|int|string $timestamp): string
  */
 function resolveGroupName(array $message, array $contacts, string $conversationId): string
 {
-    return $message['group_name']
-        ?? $message['groupName']
-        ?? $message['chat_name']
-        ?? $message['chatName']
-        ?? ($message['chat']['name'] ?? null)
-        ?? ($message['chat']['subject'] ?? null)
-        ?? $message['name']
-        ?? ($contacts[$conversationId]['profile']['name'] ?? null)
-        ?? $contacts[array_key_first($contacts)]['profile']['name'] ?? $conversationId;
+    $isGroup = isGroupConversationId($conversationId);
+
+    $groupCandidates = [
+        $message['group_name'] ?? null,
+        $message['groupName'] ?? null,
+        $message['chat_name'] ?? null,
+        $message['chatName'] ?? null,
+        $message['chat']['subject'] ?? null,
+        $message['chat']['title'] ?? null,
+        $message['chat']['name'] ?? null,
+        $message['name'] ?? null,
+        $contacts[$conversationId]['profile']['name'] ?? null,
+        $contacts[$conversationId]['profile']['pushName'] ?? null,
+    ];
+
+    foreach ($groupCandidates as $candidate) {
+        if (is_string($candidate)) {
+            $trimmed = trim($candidate);
+
+            if ($trimmed !== '') {
+                return $trimmed;
+            }
+        }
+    }
+
+    if (!$isGroup) {
+        $contactCandidates = [
+            $message['sender']['pushName'] ?? null,
+            $message['sender']['name'] ?? null,
+            $message['sender']['profile']['name'] ?? null,
+            $message['pushName'] ?? null,
+            $message['sender_name'] ?? null,
+            $contacts[$conversationId]['profile']['name'] ?? null,
+        ];
+
+        foreach ($contactCandidates as $candidate) {
+            if (is_string($candidate)) {
+                $trimmed = trim($candidate);
+
+                if ($trimmed !== '') {
+                    return $trimmed;
+                }
+            }
+        }
+    }
+
+    return $conversationId;
 }
 
 /**
@@ -417,4 +455,18 @@ function normalizeDigits($value): ?string
     $digits = preg_replace('/\D+/', '', (string) $value);
 
     return $digits !== '' ? $digits : null;
+}
+
+/**
+ * Determines if a conversation identifier belongs to a group.
+ */
+function isGroupConversationId(?string $identifier): bool
+{
+    if ($identifier === null) {
+        return false;
+    }
+
+    $normalized = strtolower($identifier);
+
+    return str_contains($normalized, '@g.us') || str_contains($normalized, '@broadcast');
 }

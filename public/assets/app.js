@@ -47,7 +47,9 @@
     if (elements.groupSearch) {
         elements.groupSearch.addEventListener('input', event => {
             const term = event.target.value.toLowerCase();
-            state.filteredGroups = state.groups.filter(group => group.name.toLowerCase().includes(term));
+            state.filteredGroups = term
+                ? state.groups.filter(group => matchesSearchTerm(group, term))
+                : [...state.groups];
             state.lastGroupsError = null;
             renderGroups();
         });
@@ -92,7 +94,7 @@
 
             const searchTerm = elements.groupSearch.value.trim().toLowerCase();
             state.filteredGroups = searchTerm
-                ? state.groups.filter(group => group.name.toLowerCase().includes(searchTerm))
+                ? state.groups.filter(group => matchesSearchTerm(group, searchTerm))
                 : [...state.groups];
 
             renderGroups();
@@ -464,6 +466,9 @@
         state.filteredGroups.forEach(group => {
             const item = document.createElement('article');
             item.className = 'group-item';
+            const isGroup = group.is_group ?? (group.type === 'group');
+            item.classList.add(isGroup ? 'group-item--group' : 'group-item--contact');
+
             if (group.id === state.selectedGroupId) {
                 item.classList.add('is-active');
             }
@@ -471,6 +476,7 @@
             item.tabIndex = 0;
             item.role = 'option';
             item.dataset.groupId = group.id;
+            item.setAttribute('aria-label', `${normalizeGroupName(group, true)} (${isGroup ? 'Grupo' : 'Contato'})`);
 
             item.addEventListener('click', () => selectGroup(group.id));
             item.addEventListener('keypress', event => {
@@ -482,18 +488,28 @@
 
             const avatar = document.createElement('div');
             avatar.className = 'group-item__avatar';
-            avatar.textContent = group.name.slice(0, 2).toUpperCase();
+            avatar.classList.add(isGroup ? 'group-item__avatar--group' : 'group-item__avatar--contact');
+            avatar.textContent = buildInitials(normalizeGroupName(group, true));
 
             const details = document.createElement('div');
             details.className = 'group-item__details';
 
             const name = document.createElement('span');
             name.className = 'group-item__name';
-            name.textContent = group.name;
+            name.textContent = normalizeGroupName(group, true);
 
-            const meta = document.createElement('span');
+            const meta = document.createElement('div');
             meta.className = 'group-item__meta';
-            meta.textContent = formatTime(group.last_message_sent_at);
+
+            const metaTime = document.createElement('span');
+            metaTime.className = 'group-item__time';
+            metaTime.textContent = formatTime(group.last_message_sent_at);
+
+            const typeTag = document.createElement('span');
+            typeTag.className = 'group-item__tag';
+            typeTag.textContent = isGroup ? 'Grupo' : 'Contato';
+
+            meta.append(metaTime, typeTag);
 
             const preview = document.createElement('span');
             preview.className = 'group-item__preview';
@@ -716,6 +732,70 @@
         }
 
         return value.length > max ? `${value.slice(0, max)}â€¦` : value;
+    }
+
+    function normalizeGroupName(group, preserveCase = false) {
+        if (!group) {
+            return preserveCase ? 'Conversa' : '';
+        }
+
+        const candidates = [
+            typeof group.name === 'string' ? group.name.trim() : '',
+            formatWaId(group.wa_id),
+        ].filter(Boolean);
+
+        const label = candidates.length ? candidates[0] : preserveCase ? 'Conversa' : '';
+
+        return preserveCase ? label : label.toLowerCase();
+    }
+
+    function buildInitials(label) {
+        const source = (label ?? '').trim();
+
+        if (!source) {
+            return '??';
+        }
+
+        const parts = source.split(/\s+/);
+
+        if (parts.length === 1) {
+            return parts[0].slice(0, 2).toUpperCase();
+        }
+
+        const first = parts[0][0] ?? '';
+        const last = parts[parts.length - 1][0] ?? '';
+
+        return `${first}${last}`.toUpperCase();
+    }
+
+    function formatWaId(value) {
+        if (!value) {
+            return '';
+        }
+
+        const label = value.toString();
+
+        if (label.includes('@')) {
+            const before = label.split('@')[0];
+            if (before) {
+                return before;
+            }
+        }
+
+        return label;
+    }
+
+    function matchesSearchTerm(group, term) {
+        if (!term) {
+            return true;
+        }
+
+        const haystack = [
+            normalizeGroupName(group, true),
+            formatWaId(group?.wa_id ?? ''),
+        ].join(' ').toLowerCase();
+
+        return haystack.includes(term);
     }
 
     loadGroups();
