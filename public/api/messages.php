@@ -25,7 +25,8 @@ if (!$groupRow) {
 }
 
 $query = $pdo->prepare(
-    'SELECT id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at
+    'SELECT id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at,
+            media_path, media_mime, media_size, media_duration, media_caption, media_original_name
      FROM messages
      WHERE group_id = :group_id
      ORDER BY sent_at ASC, id ASC'
@@ -48,5 +49,24 @@ echo json_encode([
         'message_body' => $message['message_body'],
         'is_from_me' => (bool) $message['is_from_me'],
         'sent_at' => $message['sent_at'],
+        'media' => buildMediaResponse($message),
     ], $messages),
 ], JSON_UNESCAPED_UNICODE);
+
+function buildMediaResponse(array $message): ?array
+{
+    if (empty($message['media_path'])) {
+        return null;
+    }
+
+    $path = trim(str_replace(['\\'], '/', (string) $message['media_path']), '/');
+
+    return [
+        'url' => 'media.php?path=' . rawurlencode($path),
+        'mime' => $message['media_mime'],
+        'size' => isset($message['media_size']) ? (int) $message['media_size'] : null,
+        'duration' => isset($message['media_duration']) ? (int) $message['media_duration'] : null,
+        'caption' => $message['media_caption'],
+        'original_name' => $message['media_original_name'],
+    ];
+}

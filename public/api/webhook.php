@@ -111,6 +111,25 @@ try {
                 $messageData = normalizeMessage($message, $contacts);
                 $messageData['sent_at'] = $sentAt;
 
+                if (!empty($messageData['media']) && is_array($messageData['media'])) {
+                    $persisted = persistMediaAttachment($messageData['media'], $conversationId, $sentAt, $messageData['wa_message_id'] ?? null);
+
+                    if ($persisted) {
+                        $messageData['media_path'] = $persisted['relative_path'];
+                        $messageData['media_mime'] = $persisted['mime'];
+                        $messageData['media_size'] = $persisted['size'];
+                        $messageData['media_duration'] = $persisted['duration'];
+                        $messageData['media_caption'] = $persisted['caption'];
+                        $messageData['media_original_name'] = $persisted['original_name'];
+
+                        if (($messageData['message_body'] ?? '') === '' && $persisted['caption']) {
+                            $messageData['message_body'] = $persisted['caption'];
+                        }
+                    }
+                }
+
+                unset($messageData['media']);
+
                 storeMessage($pdo, $groupId, $messageData);
             }
         }
@@ -253,12 +272,18 @@ function normalizeMessage(array $message, array $contacts): array
 
     $body = extractBody($message);
 
+    $mediaAttachment = extractMediaAttachment($message);
+
     if ($body === null && isset($message['msgContent']) && is_array($message['msgContent'])) {
         $body = extractBody($message['msgContent']);
     }
 
     if ($body === null) {
-        $body = labelForAttachment($type, $message);
+        if ($mediaAttachment && isset($mediaAttachment['caption']) && $mediaAttachment['caption'] !== '') {
+            $body = $mediaAttachment['caption'];
+        } else {
+            $body = labelForAttachment($type, $message);
+        }
 
         if (($message['messageStubType'] ?? '') === 'CIPHERTEXT' && isset($message['messageStubParameters'][0])) {
             $body .= "\n" . trim((string) $message['messageStubParameters'][0]);
@@ -270,6 +295,10 @@ function normalizeMessage(array $message, array $contacts): array
         ?? (($message['status'] ?? null) === 'sent')
         ?? false;
 
+    if ($mediaAttachment) {
+        $type = $mediaAttachment['type'] ?? $type;
+    }
+
     return [
         'wa_message_id' => $message['id'] ?? null,
         'sender_name' => $senderName,
@@ -278,6 +307,7 @@ function normalizeMessage(array $message, array $contacts): array
         'message_body' => trim((string) $body),
         'is_from_me' => (bool) $direction,
         'raw_payload' => $message,
+        'media' => $mediaAttachment,
     ];
 }
 
@@ -469,4 +499,226 @@ function isGroupConversationId(?string $identifier): bool
     $normalized = strtolower($identifier);
 
     return str_contains($normalized, '@g.us') || str_contains($normalized, '@broadcast');
+}
+
+/**
+ * Attempts to extract a media attachment from the message payload.
+ */
+function extractMediaAttachment(array $message): ?array
+{
+    $attachmentMap = [
+        'imageMessage' => 'image',
+        'audioMessage' => 'audio',
+        'stickerMessage' => 'sticker',
+    ];
+
+    foreach ($attachmentMap as $key => $type) {
+        if (!isset($message[$key]) || !is_array($message[$key])) {
+            continue;
+        }
+
+        $payload = $message[$key];
+
+        return normalizeAttachmentPayload($payload, $type);
+    }
+
+    if (isset($message['message']) && is_array($message['message'])) {
+        return extractMediaAttachment($message['message']);
+    }
+
+    if (isset($message['msgContent']) && is_array($message['msgContent'])) {
+        return extractMediaAttachment($message['msgContent']);
+    }
+
+    return null;
+}
+
+/**
+ * Normalizes raw attachment payloads into a consistent array.
+ */
+function normalizeAttachmentPayload(array $payload, string $type): array
+{
+    $url = $payload['url'] ?? $payload['directPath'] ?? null;
+    $mime = $payload['mimetype'] ?? 'application/octet-stream';
+    $caption = $payload['caption'] ?? $payload['text'] ?? $payload['title'] ?? null;
+
+    return [
+        'type' => $type,
+        'url' => $url,
+        'mime' => $mime,
+        'size' => isset($payload['fileLength']) ? (int) $payload['fileLength'] : null,
+        'duration' => isset($payload['seconds']) ? (int) $payload['seconds'] : null,
+        'caption' => $caption,
+        'filename' => $payload['fileName'] ?? $payload['title'] ?? null,
+        'sha256' => $payload['fileSha256'] ?? $payload['fileEncSha256'] ?? null,
+        'waveform' => $payload['waveform'] ?? null,
+    ];
+}
+
+/**
+ * Persists a downloaded attachment to disk.
+ */
+function persistMediaAttachment(?array $media, string $conversationId, string $sentAt, ?string $messageId): ?array
+{
+    if (!$media || empty($media['url'])) {
+        return null;
+    }
+
+    $root = defined('MEDIA_STORAGE_PATH') ? MEDIA_STORAGE_PATH : (__DIR__ . '/../../data/media');
+
+    try {
+        $binary = downloadMediaFile($media['url']);
+    } catch (Throwable $exception) {
+        error_log('Failed to download media: ' . $exception->getMessage());
+        return null;
+    }
+
+    try {
+        $timestamp = new DateTimeImmutable($sentAt);
+    } catch (Throwable $exception) {
+        $timestamp = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    }
+
+    $year = $timestamp->format('Y');
+    $month = $timestamp->format('m');
+    $safeConversation = sanitizeConversationPath($conversationId);
+
+    $relativeDirectory = $year . '/' . $month . '/' . $safeConversation;
+    $absoluteDirectory = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relativeDirectory;
+
+    if (!is_dir($absoluteDirectory) && !mkdir($absoluteDirectory, 0775, true) && !is_dir($absoluteDirectory)) {
+        error_log('Unable to create media directory: ' . $absoluteDirectory);
+        return null;
+    }
+
+    $sequence = nextMediaSequence($absoluteDirectory);
+    $extension = guessExtensionFromMime($media['mime'] ?? '') ?? 'bin';
+    $baseName = $timestamp->format('Ymd_His');
+
+    if ($messageId) {
+        $baseName .= '_' . substr(preg_replace('/[^a-f0-9]/i', '', $messageId), 0, 6);
+    }
+
+    $fileName = sprintf('%s-%s.%s', $baseName, str_pad((string) $sequence, 4, '0', STR_PAD_LEFT), $extension);
+    $absolutePath = $absoluteDirectory . DIRECTORY_SEPARATOR . $fileName;
+
+    if (file_put_contents($absolutePath, $binary) === false) {
+        error_log('Unable to write media file: ' . $absolutePath);
+        return null;
+    }
+
+    return [
+        'relative_path' => trim($relativeDirectory . '/' . $fileName, '/'),
+        'absolute_path' => $absolutePath,
+        'mime' => $media['mime'] ?? 'application/octet-stream',
+        'size' => @filesize($absolutePath) ?: $media['size'] ?? null,
+        'duration' => $media['duration'] ?? null,
+        'caption' => $media['caption'] ?? null,
+        'original_name' => $media['filename'] ?? null,
+    ];
+}
+
+/**
+ * Downloads a remote file using cURL.
+ */
+function downloadMediaFile(string $url): string
+{
+    $handle = curl_init($url);
+
+    if ($handle === false) {
+        throw new RuntimeException('Unable to initialize media download.');
+    }
+
+    $verifySsl = env_bool('MEDIA_VERIFY_SSL', env_bool('WAPI_VERIFY_SSL', true));
+
+    curl_setopt_array($handle, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => (int) env('MEDIA_DOWNLOAD_TIMEOUT', 30),
+        CURLOPT_SSL_VERIFYPEER => $verifySsl,
+        CURLOPT_SSL_VERIFYHOST => $verifySsl ? 2 : 0,
+        CURLOPT_HTTPHEADER => ['User-Agent: SocialInsightBot/1.0'],
+    ]);
+
+    $result = curl_exec($handle);
+
+    if ($result === false) {
+        $error = curl_error($handle);
+        curl_close($handle);
+        throw new RuntimeException('Media download failed: ' . $error);
+    }
+
+    $statusCode = curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+    curl_close($handle);
+
+    if ($statusCode >= 400) {
+        throw new RuntimeException('Media download responded with HTTP ' . $statusCode);
+    }
+
+    return $result;
+}
+
+function sanitizeConversationPath(string $identifier): string
+{
+    $sanitized = preg_replace('/[^a-zA-Z0-9_\-@.]/', '_', $identifier);
+
+    return trim($sanitized, '_') ?: 'conversation';
+}
+
+function nextMediaSequence(string $directory): int
+{
+    $max = 0;
+
+    if (is_dir($directory)) {
+        $iterator = new FilesystemIterator($directory, FilesystemIterator::SKIP_DOTS);
+
+        foreach ($iterator as $file) {
+            $name = $file->getFilename();
+
+            if (preg_match('/-(\d{4})\.[^.]+$/', $name, $matches)) {
+                $max = max($max, (int) $matches[1]);
+            }
+        }
+    }
+
+    return $max + 1;
+}
+
+function guessExtensionFromMime(?string $mime): ?string
+{
+    if (!$mime) {
+        return null;
+    }
+
+    $map = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'audio/ogg' => 'ogg',
+        'audio/opus' => 'opus',
+        'audio/mpeg' => 'mp3',
+        'audio/amr' => 'amr',
+        'audio/aac' => 'aac',
+        'video/mp4' => 'mp4',
+        'application/pdf' => 'pdf',
+    ];
+
+    if (isset($map[$mime])) {
+        return $map[$mime];
+    }
+
+    if (str_starts_with($mime, 'image/')) {
+        return substr($mime, 6);
+    }
+
+    if (str_starts_with($mime, 'audio/')) {
+        return substr($mime, 6);
+    }
+
+    if (str_starts_with($mime, 'video/')) {
+        return substr($mime, 6);
+    }
+
+    return null;
 }

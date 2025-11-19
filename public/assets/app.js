@@ -570,6 +570,8 @@
             bubble.className = 'message';
             bubble.classList.add(message.is_from_me ? 'is-outbound' : 'is-inbound');
 
+            const hasMedia = Boolean(message.media && message.media.url);
+
             if (message.message_type && message.message_type !== 'text') {
                 bubble.classList.add('is-attachment');
             }
@@ -577,17 +579,33 @@
             const author = document.createElement('span');
             author.className = 'message__author';
             author.textContent = message.sender_name ?? 'Contato';
+            bubble.appendChild(author);
 
-            const text = document.createElement('div');
-            text.className = 'message__body';
-            text.textContent = message.message_body || '[mensagem sem conteudo]';
+            if (hasMedia) {
+                const mediaElement = createMediaElement(message);
+                if (mediaElement) {
+                    bubble.classList.add('message--has-media');
+                    bubble.appendChild(mediaElement);
+                }
+            }
+
+            const bodyText = (message.message_body || '').trim();
+
+            if (bodyText !== '') {
+                const text = document.createElement('div');
+                text.className = 'message__body';
+                text.textContent = bodyText;
+                bubble.appendChild(text);
+            } else if (!hasMedia) {
+                const placeholder = document.createElement('div');
+                placeholder.className = 'message__body message__body--muted';
+                placeholder.textContent = '[mensagem sem conteúdo]';
+                bubble.appendChild(placeholder);
+            }
 
             const meta = document.createElement('span');
             meta.className = 'message__meta';
             meta.textContent = formatTime(message.sent_at);
-
-            bubble.appendChild(author);
-            bubble.appendChild(text);
             bubble.appendChild(meta);
 
             fragment.appendChild(bubble);
@@ -796,6 +814,38 @@
         ].join(' ').toLowerCase();
 
         return haystack.includes(term);
+    }
+
+    function createMediaElement(message) {
+        const media = message.media;
+
+        if (!media || !media.url) {
+            return null;
+        }
+
+        const mime = (media.mime || '').toLowerCase();
+        const type = (message.message_type || '').toLowerCase();
+
+        if (mime.startsWith('audio/') || type === 'audio') {
+            const audio = document.createElement('audio');
+            audio.controls = true;
+            audio.preload = 'metadata';
+            audio.src = media.url;
+            audio.className = 'message__media message__media--audio';
+            return audio;
+        }
+
+        const img = document.createElement('img');
+        img.src = media.url;
+        img.alt = media.original_name ?? 'Arquivo de mídia';
+        img.loading = 'lazy';
+        img.className = 'message__media message__media--image';
+
+        if (type === 'sticker') {
+            img.classList.add('message__media--sticker');
+        }
+
+        return img;
     }
 
     loadGroups();
