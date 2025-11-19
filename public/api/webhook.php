@@ -99,7 +99,9 @@ try {
                     ?? null
                 );
 
-                $groupName = resolveGroupName($message, $contacts, $conversationId);
+                $isFromMe = isOutgoingMessage($message);
+
+                $groupName = resolveGroupName($message, $contacts, $conversationId, $isFromMe, $value);
 
                 $groupId = upsertGroup($pdo, [
                     'wa_id' => $conversationId,
@@ -198,7 +200,7 @@ function resolveTimestamp(null|int|string $timestamp): string
 /**
  * Attempts to extract a human-readable group name.
  */
-function resolveGroupName(array $message, array $contacts, string $conversationId): string
+function resolveGroupName(array $message, array $contacts, string $conversationId, bool $isFromMe, array $context = []): string
 {
     $isGroup = isGroupConversationId($conversationId);
 
@@ -213,6 +215,10 @@ function resolveGroupName(array $message, array $contacts, string $conversationI
         $message['name'] ?? null,
         $contacts[$conversationId]['profile']['name'] ?? null,
         $contacts[$conversationId]['profile']['pushName'] ?? null,
+        $context['chat']['subject'] ?? null,
+        $context['chat']['title'] ?? null,
+        $context['chat']['name'] ?? null,
+        $context['name'] ?? null,
     ];
 
     foreach ($groupCandidates as $candidate) {
@@ -227,13 +233,25 @@ function resolveGroupName(array $message, array $contacts, string $conversationI
 
     if (!$isGroup) {
         $contactCandidates = [
-            $message['sender']['pushName'] ?? null,
-            $message['sender']['name'] ?? null,
-            $message['sender']['profile']['name'] ?? null,
-            $message['pushName'] ?? null,
-            $message['sender_name'] ?? null,
+            $message['chat']['name'] ?? null,
+            $message['chat']['pushName'] ?? null,
+            $context['chat']['name'] ?? null,
+            $context['chat']['pushName'] ?? null,
             $contacts[$conversationId]['profile']['name'] ?? null,
+            $contacts[$conversationId]['profile']['pushName'] ?? null,
+            $message['sender_name'] ?? null,
         ];
+
+        if (!$isFromMe) {
+            $contactCandidates[] = $message['sender']['pushName'] ?? null;
+            $contactCandidates[] = $message['sender']['name'] ?? null;
+            $contactCandidates[] = $message['sender']['profile']['name'] ?? null;
+            $contactCandidates[] = $message['pushName'] ?? null;
+            $contactCandidates[] = $message['name'] ?? null;
+            $contactCandidates[] = $context['sender']['pushName'] ?? null;
+            $contactCandidates[] = $context['sender']['name'] ?? null;
+            $contactCandidates[] = $context['sender']['profile']['name'] ?? null;
+        }
 
         foreach ($contactCandidates as $candidate) {
             if (is_string($candidate)) {
@@ -290,10 +308,7 @@ function normalizeMessage(array $message, array $contacts): array
         }
     }
 
-    $direction = $message['from_me']
-        ?? $message['fromMe']
-        ?? (($message['status'] ?? null) === 'sent')
-        ?? false;
+    $direction = isOutgoingMessage($message);
 
     if ($mediaAttachment) {
         $type = $mediaAttachment['type'] ?? $type;
@@ -309,6 +324,14 @@ function normalizeMessage(array $message, array $contacts): array
         'raw_payload' => $message,
         'media' => $mediaAttachment,
     ];
+}
+
+function isOutgoingMessage(array $message): bool
+{
+    return (bool) ($message['from_me']
+        ?? $message['fromMe']
+        ?? (($message['status'] ?? null) === 'sent')
+        ?? false);
 }
 
 /**
@@ -510,6 +533,7 @@ function extractMediaAttachment(array $message): ?array
         'imageMessage' => 'image',
         'audioMessage' => 'audio',
         'stickerMessage' => 'sticker',
+        'documentMessage' => 'document',
     ];
 
     foreach ($attachmentMap as $key => $type) {
@@ -538,7 +562,7 @@ function extractMediaAttachment(array $message): ?array
  */
 function normalizeAttachmentPayload(array $payload, string $type): array
 {
-    $url = $payload['url'] ?? $payload['directPath'] ?? null;
+    $url = resolveMediaUrl($payload);
     $mime = $payload['mimetype'] ?? 'application/octet-stream';
     $caption = $payload['caption'] ?? $payload['text'] ?? $payload['title'] ?? null;
 
@@ -552,7 +576,102 @@ function normalizeAttachmentPayload(array $payload, string $type): array
         'filename' => $payload['fileName'] ?? $payload['title'] ?? null,
         'sha256' => $payload['fileSha256'] ?? $payload['fileEncSha256'] ?? null,
         'waveform' => $payload['waveform'] ?? null,
+        'media_key' => $payload['mediaKey'] ?? null,
+        'file_enc_sha256' => $payload['fileEncSha256'] ?? null,
     ];
+}
+
+function resolveMediaUrl(array $payload): ?string
+{
+    $url = $payload['url'] ?? null;
+
+    if (is_string($url) && $url !== '' && preg_match('#^https?://#i', $url)) {
+        return $url;
+    }
+
+    $directPath = $payload['directPath'] ?? null;
+
+    if (is_string($directPath) && $directPath !== '') {
+        $base = rtrim(env('MEDIA_CDN_BASE_URL', 'https://mmg.whatsapp.net'), '/');
+
+        return $base . '/' . ltrim($directPath, '/');
+    }
+
+    return $url ?: null;
+}
+
+function decryptWhatsAppMedia(string $binary, array $media): ?string
+{
+    $mediaKeyBase64 = $media['media_key'] ?? null;
+    if (!$mediaKeyBase64) {
+        return null;
+    }
+
+    $mediaKey = base64_decode($mediaKeyBase64, true);
+
+    if ($mediaKey === false) {
+        return null;
+    }
+
+    $type = strtolower((string) ($media['type'] ?? 'media'));
+    $infoMap = [
+        'image' => 'WhatsApp Image Keys',
+        'audio' => 'WhatsApp Audio Keys',
+        'video' => 'WhatsApp Video Keys',
+        'document' => 'WhatsApp Document Keys',
+        'sticker' => 'WhatsApp Image Keys',
+    ];
+
+    $info = $infoMap[$type] ?? 'WhatsApp Media Keys';
+
+    $derived = hkdfSHA256($mediaKey, 112, $info);
+
+    if ($derived === null) {
+        return null;
+    }
+
+    $iv = substr($derived, 0, 16);
+    $cipherKey = substr($derived, 16, 32);
+    $macKey = substr($derived, 48, 32);
+
+    if (strlen($binary) <= 10) {
+        return null;
+    }
+
+    $mac = substr($binary, -10);
+    $ciphertext = substr($binary, 0, -10);
+
+    $calcMac = substr(hash_hmac('sha256', $ciphertext . $iv, $macKey, true), 0, 10);
+
+    if (!hash_equals($mac, $calcMac)) {
+        return null;
+    }
+
+    $plaintext = openssl_decrypt($ciphertext, 'aes-256-cbc', $cipherKey, OPENSSL_RAW_DATA, $iv);
+
+    if ($plaintext === false) {
+        return null;
+    }
+
+    return $plaintext;
+}
+
+function hkdfSHA256(string $ikm, int $length, string $info = '', ?string $salt = null): ?string
+{
+    $hashLength = 32;
+    $salt = $salt ?? str_repeat("\0", $hashLength);
+    $prk = hash_hmac('sha256', $ikm, $salt, true);
+
+    $blocks = (int) ceil($length / $hashLength);
+    $okm = '';
+    $previous = '';
+
+    for ($block = 1; $block <= $blocks; $block++) {
+        $previous = hash_hmac('sha256', $previous . $info . chr($block), $prk, true);
+        $okm .= $previous;
+    }
+
+    return substr($okm, 0, $length);
 }
 
 /**
@@ -571,6 +690,12 @@ function persistMediaAttachment(?array $media, string $conversationId, string $s
     } catch (Throwable $exception) {
         error_log('Failed to download media: ' . $exception->getMessage());
         return null;
+    }
+
+    $decrypted = decryptWhatsAppMedia($binary, $media);
+
+    if ($decrypted !== null) {
+        $binary = $decrypted;
     }
 
     try {
@@ -660,7 +785,7 @@ function downloadMediaFile(string $url): string
 
 function sanitizeConversationPath(string $identifier): string
 {
-    $sanitized = preg_replace('/[^a-zA-Z0-9_\-@.]/', '_', $identifier);
+    $sanitized = preg_replace('/[^a-zA-Z0-9_-]/', '_', $identifier);
 
     return trim($sanitized, '_') ?: 'conversation';
 }

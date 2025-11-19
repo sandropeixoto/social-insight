@@ -364,7 +364,7 @@ body {
     display: grid;
     grid-template-columns: auto 1fr;
     gap: 10px;
-    padding: 14px 18px;
+    padding: 10px 16px;
     cursor: pointer;
     border-bottom: 1px solid #202c33;
     transition: background 0.2s ease;
@@ -413,7 +413,7 @@ body {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: start;
-    gap: 6px;
+    gap: 4px;
 }
 
 .group-item__name {
@@ -465,18 +465,6 @@ body {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-}
-
-.group-item__count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: #23d366;
-    color: #111b21;
-    border-radius: 12px;
-    padding: 2px 8px;
-    font-size: 11px;
-    margin-top: 6px;
 }
 
 .conversation {

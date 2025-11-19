@@ -16,6 +16,7 @@
         isSyncingChats: false,
         isDisconnecting: false,
         instanceCollapsed: false,
+        instanceInitialized: false,
         instanceStatus: {
             connected: null,
             lastUpdated: null,
@@ -248,6 +249,13 @@
         const status = state.instanceStatus;
         const wrapper = document.createElement('div');
         wrapper.className = 'instance-status';
+
+        if (!state.instanceInitialized && status.connected !== null) {
+            if (status.connected === true) {
+                state.instanceCollapsed = true;
+            }
+            state.instanceInitialized = true;
+        }
 
         let icon = '..';
         let title = 'Verificando instancia...';
@@ -515,14 +523,9 @@
             preview.className = 'group-item__preview';
             preview.textContent = group.last_message_body ? truncate(group.last_message_body, 70) : 'Sem mensagens registradas.';
 
-            const count = document.createElement('span');
-            count.className = 'group-item__count';
-            count.textContent = group.message_count;
-
             details.appendChild(name);
             details.appendChild(meta);
             details.appendChild(preview);
-            details.appendChild(count);
 
             item.appendChild(avatar);
             item.appendChild(details);
