@@ -36,8 +36,8 @@ if ($body === false) {
     exit;
 }
 
-$logDirectory = __DIR__ . '/../../data';
-$logFile = $logDirectory . '/webhook.log';
+$logDirectory = dirname(WEBHOOK_LOG_PATH);
+$logFile = WEBHOOK_LOG_PATH;
 
 if (is_dir($logDirectory)) {
     $entry = sprintf(
@@ -108,7 +108,7 @@ try {
                     'name' => $groupName,
                     'channel' => $channelIdentifier,
                     'last_message_at' => $sentAt,
-                ]);
+                ], true);
 
                 $messageData = normalizeMessage($message, $contacts);
                 $messageData['sent_at'] = $sentAt;
@@ -692,10 +692,12 @@ function persistMediaAttachment(?array $media, string $conversationId, string $s
         return null;
     }
 
-    $decrypted = decryptWhatsAppMedia($binary, $media);
+    if (env_bool('MEDIA_DECRYPT_WHATSAPP', true)) {
+        $decrypted = decryptWhatsAppMedia($binary, $media);
 
-    if ($decrypted !== null) {
-        $binary = $decrypted;
+        if ($decrypted !== null) {
+            $binary = $decrypted;
+        }
     }
 
     try {
@@ -732,10 +734,12 @@ function persistMediaAttachment(?array $media, string $conversationId, string $s
         return null;
     }
 
+    $detectedMime = mime_content_type($absolutePath) ?: ($media['mime'] ?? 'application/octet-stream');
+
     return [
         'relative_path' => trim($relativeDirectory . '/' . $fileName, '/'),
         'absolute_path' => $absolutePath,
-        'mime' => $media['mime'] ?? 'application/octet-stream',
+        'mime' => $detectedMime,
         'size' => @filesize($absolutePath) ?: $media['size'] ?? null,
         'duration' => $media['duration'] ?? null,
         'caption' => $media['caption'] ?? null,

@@ -28,6 +28,10 @@ if (!is_dir($databaseDirectory) && !mkdir($databaseDirectory, 0775, true) && !is
     throw new RuntimeException('Unable to create data directory at ' . $databaseDirectory);
 }
 
+if (!defined('DATABASE_FILE')) {
+    define('DATABASE_FILE', $databasePath);
+}
+
 $mediaPath = env('MEDIA_STORAGE_PATH');
 
 if (is_string($mediaPath) && $mediaPath !== '') {
@@ -51,6 +55,14 @@ if (!defined('MEDIA_STORAGE_PATH')) {
     define('MEDIA_STORAGE_PATH', realpath($mediaDirectory) ?: $mediaDirectory);
 }
 
+$webhookLog = $databaseDirectory . DIRECTORY_SEPARATOR . 'webhook.log';
+if (!file_exists($webhookLog)) {
+    @touch($webhookLog);
+}
+if (!defined('WEBHOOK_LOG_PATH')) {
+    define('WEBHOOK_LOG_PATH', $webhookLog);
+}
+
 $logPath = $databaseDirectory . DIRECTORY_SEPARATOR . 'php-error.log';
 if (!file_exists($logPath) && !touch($logPath)) {
     $logPath = ini_get('error_log');
@@ -59,50 +71,10 @@ ini_set('error_log', $logPath);
 
 $initializeSchema = !file_exists($databasePath);
 
-$pdo = new PDO('sqlite:' . $databasePath);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+$pdo = createPdoConnection($databasePath);
 
 if ($initializeSchema) {
-    $schema = <<<SQL
-        PRAGMA foreign_keys = ON;
-
-        CREATE TABLE IF NOT EXISTS groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            wa_id TEXT NOT NULL UNIQUE,
-            name TEXT,
-            channel TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            last_message_at TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            group_id INTEGER NOT NULL,
-            wa_message_id TEXT,
-            sender_name TEXT,
-            sender_phone TEXT,
-            message_type TEXT,
-            message_body TEXT,
-            is_from_me INTEGER NOT NULL DEFAULT 0,
-            sent_at TEXT NOT NULL,
-            media_path TEXT,
-            media_mime TEXT,
-            media_size INTEGER,
-            media_duration INTEGER,
-            media_caption TEXT,
-            media_original_name TEXT,
-            raw_payload TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_messages_group_id_sent_at ON messages (group_id, sent_at);
-        CREATE INDEX IF NOT EXISTS idx_groups_last_message_at ON groups (last_message_at);
-    SQL;
-
-    $pdo->exec($schema);
+    initializeDatabaseSchema($pdo);
 }
 
 ensureMessagesMediaColumns($pdo);
@@ -127,18 +99,31 @@ function db(): PDO
 /**
  * Inserts or updates a group record.
  */
-function upsertGroup(PDO $pdo, array $group): int
+function upsertGroup(PDO $pdo, array $group, bool $preserveName = false): int
 {
-    $existing = $pdo->prepare('SELECT id FROM groups WHERE wa_id = :wa_id');
-    $existing->execute([':wa_id' => $group['wa_id']]);
-    $groupId = $existing->fetchColumn();
+    $existingStmt = $pdo->prepare('SELECT id, name FROM groups WHERE wa_id = :wa_id');
+    $existingStmt->execute([':wa_id' => $group['wa_id']]);
+    $existing = $existingStmt->fetch();
+    $groupId = $existing['id'] ?? null;
+
+    $incomingName = trim((string) ($group['name'] ?? ''));
+    $currentName = isset($existing['name']) ? (string) $existing['name'] : null;
+
+    $shouldUpdateName = $incomingName !== '' && (
+        !$preserveName
+        || $currentName === null
+        || $currentName === ''
+        || $currentName === $group['wa_id']
+    );
+
+    $nameToStore = $shouldUpdateName ? $incomingName : ($currentName ?? $incomingName);
 
     if ($groupId) {
         $update = $pdo->prepare(
             'UPDATE groups SET name = :name, channel = :channel, updated_at = datetime("now"), last_message_at = :last_message_at WHERE id = :id'
         );
         $update->execute([
-            ':name' => $group['name'],
+            ':name' => $nameToStore,
             ':channel' => $group['channel'],
             ':last_message_at' => $group['last_message_at'],
             ':id' => $groupId,
@@ -152,7 +137,7 @@ function upsertGroup(PDO $pdo, array $group): int
     );
     $insert->execute([
         ':wa_id' => $group['wa_id'],
-        ':name' => $group['name'],
+        ':name' => $nameToStore,
         ':channel' => $group['channel'],
         ':last_message_at' => $group['last_message_at'],
     ]);
@@ -215,4 +200,59 @@ function ensureMessagesMediaColumns(PDO $pdo): void
             $pdo->exec($sql);
         }
     }
+}
+
+function createPdoConnection(string $databasePath): PDO
+{
+    $pdo = new PDO('sqlite:' . $databasePath);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+    return $pdo;
+}
+
+function initializeDatabaseSchema(PDO $pdo): void
+{
+    $pdo->exec(databaseSchemaDefinition());
+}
+
+function databaseSchemaDefinition(): string
+{
+    return <<<SQL
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wa_id TEXT NOT NULL UNIQUE,
+            name TEXT,
+            channel TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_message_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            wa_message_id TEXT,
+            sender_name TEXT,
+            sender_phone TEXT,
+            message_type TEXT,
+            message_body TEXT,
+            is_from_me INTEGER NOT NULL DEFAULT 0,
+            sent_at TEXT NOT NULL,
+            media_path TEXT,
+            media_mime TEXT,
+            media_size INTEGER,
+            media_duration INTEGER,
+            media_caption TEXT,
+            media_original_name TEXT,
+            raw_payload TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_messages_group_id_sent_at ON messages (group_id, sent_at);
+        CREATE INDEX IF NOT EXISTS idx_groups_last_message_at ON groups (last_message_at);
+    SQL;
 }

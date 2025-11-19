@@ -154,8 +154,9 @@ function fetchStoredGroups(PDO $pdo, ?string $connectedPhone): array
     $params = [];
 
     if ($connectedPhone) {
-        $query .= ' WHERE g.channel = :channel';
+        $query .= ' WHERE (g.channel = :channel OR g.channel IS NULL OR g.channel = :fallback_channel)';
         $params[':channel'] = $connectedPhone;
+        $params[':fallback_channel'] = env('WAPI_FALLBACK_CHANNEL', 'whatsapp');
     }
 
     $query .= ' ORDER BY COALESCE(g.last_message_at, g.created_at) DESC';
@@ -298,7 +299,7 @@ function syncGroupsFromWapi(PDO $pdo, ?WapiClient $client, ?string $instanceId, 
                         'name' => $name,
                         'channel' => (string) $channel,
                         'last_message_at' => $lastMessageAt,
-                    ]);
+                    ], false);
 
                     $synced++;
                 }

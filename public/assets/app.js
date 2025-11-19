@@ -27,6 +27,14 @@
             profileError: null,
             qrError: null,
         },
+        debugPanelOpen: false,
+        debugData: {
+            tables: [],
+            log: [],
+            schema: '',
+        },
+        selectedDebugTable: null,
+        debugLoading: false,
     };
 
     const elements = {
@@ -37,6 +45,8 @@
         instanceContainer: document.querySelector('.sidebar__instance'),
         instanceStatus: document.getElementById('instanceStatus'),
         instanceToggle: document.getElementById('instanceToggle'),
+        debugPanel: null,
+        debugPanelContent: null,
     };
 
     const endpoints = window.APP_CONFIG?.endpoints ?? {
@@ -723,10 +733,251 @@
     }
 
     function attachDebugBadge() {
-        const badge = document.createElement('div');
+        const badge = document.createElement('button');
+        badge.type = 'button';
         badge.className = 'debug-indicator';
         badge.textContent = 'DEBUG ATIVO';
+        badge.addEventListener('click', () => toggleDebugPanel());
         document.body.appendChild(badge);
+        createDebugPanel();
+    }
+
+    function createDebugPanel() {
+        const panel = document.createElement('section');
+        panel.className = 'debug-panel';
+        panel.setAttribute('aria-hidden', 'true');
+        panel.innerHTML = `
+            <header class="debug-panel__header">
+                <strong>Ferramentas de debug</strong>
+                <button type="button" class="debug-panel__close" data-debug-close>&times;</button>
+            </header>
+            <div class="debug-panel__actions">
+                <button type="button" data-debug-action="tables">Tabelas</button>
+                <button type="button" data-debug-action="log">Webhook log</button>
+                <button type="button" data-debug-action="schema">Script da base</button>
+                <button type="button" data-debug-action="reset" class="debug-panel__danger">Resetar base</button>
+            </div>
+            <div class="debug-panel__content" id="debugPanelContent">
+                <p>Selecione uma das opções acima para visualizar informações de diagnóstico.</p>
+            </div>
+        `;
+
+        document.body.appendChild(panel);
+        elements.debugPanel = panel;
+        elements.debugPanelContent = panel.querySelector('#debugPanelContent');
+
+        panel.querySelector('[data-debug-close]').addEventListener('click', () => toggleDebugPanel(false));
+        panel.querySelector('[data-debug-action="tables"]').addEventListener('click', () => loadDebugTables());
+        panel.querySelector('[data-debug-action="log"]').addEventListener('click', () => loadDebugLog());
+        panel.querySelector('[data-debug-action="schema"]').addEventListener('click', () => loadDebugSchema());
+        panel.querySelector('[data-debug-action="reset"]').addEventListener('click', () => resetDatabase());
+    }
+
+    function toggleDebugPanel(force) {
+        if (!elements.debugPanel) {
+            return;
+        }
+
+        const shouldOpen = typeof force === 'boolean' ? force : !state.debugPanelOpen;
+        state.debugPanelOpen = shouldOpen;
+        elements.debugPanel.classList.toggle('is-open', shouldOpen);
+        elements.debugPanel.setAttribute('aria-hidden', shouldOpen ? 'false' : 'true');
+
+        if (shouldOpen) {
+            setDebugMessage('Selecione uma ação para iniciar a inspeção.');
+        }
+    }
+
+    function setDebugLoading(message) {
+        state.debugLoading = true;
+        elements.debugPanelContent.innerHTML = `<p class="debug-panel__loading">${message}</p>`;
+    }
+
+    function setDebugMessage(message) {
+        state.debugLoading = false;
+        elements.debugPanelContent.innerHTML = `<p>${message}</p>`;
+    }
+
+    async function debugFetch(params = {}, options = {}) {
+        const endpoint = window.APP_CONFIG?.endpoints?.debug ?? 'api/debug.php';
+        const url = new URL(endpoint, window.location.href);
+
+        Object.entries(params).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                url.searchParams.set(key, value);
+            }
+        });
+
+        const response = await fetch(url, {
+            credentials: 'same-origin',
+            ...options,
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Debug ${response.status}: ${text || response.statusText}`);
+        }
+
+        return response.json();
+    }
+
+    async function loadDebugTables(tableName) {
+        setDebugLoading(tableName ? `Carregando registros de ${tableName}...` : 'Carregando tabelas...');
+
+        try {
+            const params = { action: 'tables' };
+            if (tableName) {
+                params.table = tableName;
+            }
+
+            const payload = await debugFetch(params);
+
+            if (tableName) {
+                renderTableRecords(tableName, payload.rows ?? []);
+            } else {
+                renderTableList(payload.tables ?? []);
+            }
+        } catch (error) {
+            setDebugMessage(`Erro: ${error.message}`);
+        }
+    }
+
+    function renderTableList(tables) {
+        if (!tables.length) {
+            setDebugMessage('Nenhuma tabela encontrada.');
+            return;
+        }
+
+        const list = document.createElement('div');
+        list.className = 'debug-panel__list';
+
+        tables.forEach(table => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'debug-panel__list-item';
+            item.textContent = `${table.name} (${table.rows})`;
+            item.addEventListener('click', () => loadDebugTables(table.name));
+            list.appendChild(item);
+        });
+
+        elements.debugPanelContent.replaceChildren(list);
+    }
+
+    function renderTableRecords(tableName, rows) {
+        if (!rows.length) {
+            setDebugMessage(`Tabela ${tableName} não possui registros.`);
+            return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'debug-panel__table-wrapper';
+
+        const title = document.createElement('div');
+        title.className = 'debug-panel__table-title';
+        title.innerHTML = `<strong>${tableName}</strong> <button type="button">Voltar</button>`;
+        title.querySelector('button').addEventListener('click', () => loadDebugTables());
+        wrapper.appendChild(title);
+
+        const table = document.createElement('table');
+        table.className = 'debug-panel__table';
+
+        const header = document.createElement('tr');
+        Object.keys(rows[0]).forEach(column => {
+            const th = document.createElement('th');
+            th.textContent = column;
+            header.appendChild(th);
+        });
+        table.appendChild(header);
+
+        rows.forEach(row => {
+            const tr = document.createElement('tr');
+            Object.values(row).forEach(value => {
+                const td = document.createElement('td');
+                td.textContent = value === null ? 'NULL' : String(value);
+                tr.appendChild(td);
+            });
+            table.appendChild(tr);
+        });
+
+        wrapper.appendChild(table);
+        elements.debugPanelContent.replaceChildren(wrapper);
+    }
+
+    async function loadDebugLog() {
+        setDebugLoading('Carregando log do webhook...');
+
+        try {
+            const payload = await debugFetch({ action: 'log', lines: 400 });
+            const container = document.createElement('div');
+            container.className = 'debug-panel__log';
+
+            const title = document.createElement('div');
+            title.className = 'debug-panel__log-title';
+            title.textContent = `Arquivo: ${payload.path || 'desconhecido'}`;
+            container.appendChild(title);
+
+            const pre = document.createElement('pre');
+            pre.textContent = (payload.lines ?? []).join('\n');
+            container.appendChild(pre);
+
+            elements.debugPanelContent.replaceChildren(container);
+        } catch (error) {
+            setDebugMessage(`Erro: ${error.message}`);
+        }
+    }
+
+    async function loadDebugSchema() {
+        setDebugLoading('Carregando script...');
+
+        try {
+            const payload = await debugFetch({ action: 'schema' });
+            const container = document.createElement('div');
+            container.className = 'debug-panel__schema';
+
+            const actions = document.createElement('div');
+            actions.className = 'debug-panel__schema-actions';
+            const runButton = document.createElement('button');
+            runButton.type = 'button';
+            runButton.textContent = 'Executar script';
+            runButton.addEventListener('click', () => runSchema());
+            actions.appendChild(runButton);
+            container.appendChild(actions);
+
+            const pre = document.createElement('pre');
+            pre.textContent = payload.schema ?? '';
+            container.appendChild(pre);
+
+            elements.debugPanelContent.replaceChildren(container);
+        } catch (error) {
+            setDebugMessage(`Erro: ${error.message}`);
+        }
+    }
+
+    async function runSchema() {
+        if (!confirm('Executar o script de criação pode atualizar tabelas existentes. Deseja continuar?')) {
+            return;
+        }
+
+        try {
+            await debugFetch({ action: 'run-schema' }, { method: 'POST' });
+            setDebugMessage('Script executado com sucesso.');
+        } catch (error) {
+            setDebugMessage(`Erro: ${error.message}`);
+        }
+    }
+
+    async function resetDatabase() {
+        if (!confirm('Isso irá apagar completamente a base atual e criar outra do zero. Deseja continuar?')) {
+            return;
+        }
+
+        try {
+            await debugFetch({ action: 'reset-db' }, { method: 'POST' });
+            setDebugMessage('Base recriada com sucesso.');
+            loadDebugTables();
+        } catch (error) {
+            setDebugMessage(`Erro: ${error.message}`);
+        }
     }
 
     function formatTime(isoString) {

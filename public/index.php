@@ -66,7 +66,8 @@ require_once __DIR__ . '/../config.php';
             endpoints: {
                 groups: 'api/groups.php',
                 messages: 'api/messages.php',
-                instance: 'api/instance.php'
+                instance: 'api/instance.php',
+                debug: 'api/debug.php'
             }
         };
     </script>
