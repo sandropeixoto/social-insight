@@ -26,7 +26,7 @@ if (!$groupRow) {
 
 $query = $pdo->prepare(
     'SELECT id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at,
-            media_path, media_mime, media_size, media_duration, media_caption, media_original_name
+            media_path, media_mime, media_size, media_duration, media_caption, media_original_name, media_url
      FROM messages
      WHERE group_id = :group_id
      ORDER BY sent_at ASC, id ASC'
