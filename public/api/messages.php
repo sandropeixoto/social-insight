@@ -55,14 +55,17 @@ echo json_encode([
 
 function buildMediaResponse(array $message): ?array
 {
-    if (empty($message['media_path'])) {
+    $remoteUrl = $message['media_url'] ?? null;
+    $localPath = $message['media_path'] ?? null;
+
+    if (!$remoteUrl && !$localPath) {
         return null;
     }
 
-    $path = trim(str_replace(['\\'], '/', (string) $message['media_path']), '/');
+    $path = $localPath ? trim(str_replace(['\\'], '/', (string) $localPath), '/') : null;
 
     return [
-        'url' => 'media.php?path=' . rawurlencode($path),
+        'url' => $remoteUrl ?: ('media.php?path=' . rawurlencode((string) $path)),
         'mime' => $message['media_mime'],
         'size' => isset($message['media_size']) ? (int) $message['media_size'] : null,
         'duration' => isset($message['media_duration']) ? (int) $message['media_duration'] : null,

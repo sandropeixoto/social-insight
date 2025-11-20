@@ -78,6 +78,7 @@ if ($initializeSchema) {
 }
 
 ensureMessagesMediaColumns($pdo);
+ensureGroupsAvatarColumn($pdo);
 
 /**
  * Returns a cached PDO instance for the application.
@@ -101,13 +102,15 @@ function db(): PDO
  */
 function upsertGroup(PDO $pdo, array $group, bool $preserveName = false): int
 {
-    $existingStmt = $pdo->prepare('SELECT id, name FROM groups WHERE wa_id = :wa_id');
+    $existingStmt = $pdo->prepare('SELECT id, name, avatar_url FROM groups WHERE wa_id = :wa_id');
     $existingStmt->execute([':wa_id' => $group['wa_id']]);
     $existing = $existingStmt->fetch();
     $groupId = $existing['id'] ?? null;
 
     $incomingName = trim((string) ($group['name'] ?? ''));
     $currentName = isset($existing['name']) ? (string) $existing['name'] : null;
+    $incomingAvatar = trim((string) ($group['avatar_url'] ?? ''));
+    $currentAvatar = isset($existing['avatar_url']) ? (string) $existing['avatar_url'] : null;
 
     $shouldUpdateName = $incomingName !== '' && (
         !$preserveName
@@ -117,14 +120,16 @@ function upsertGroup(PDO $pdo, array $group, bool $preserveName = false): int
     );
 
     $nameToStore = $shouldUpdateName ? $incomingName : ($currentName ?? $incomingName);
+    $avatarToStore = $incomingAvatar !== '' ? $incomingAvatar : $currentAvatar;
 
     if ($groupId) {
         $update = $pdo->prepare(
-            'UPDATE groups SET name = :name, channel = :channel, updated_at = datetime("now"), last_message_at = :last_message_at WHERE id = :id'
+            'UPDATE groups SET name = :name, channel = :channel, avatar_url = :avatar_url, updated_at = datetime("now"), last_message_at = :last_message_at WHERE id = :id'
         );
         $update->execute([
             ':name' => $nameToStore,
             ':channel' => $group['channel'],
+            ':avatar_url' => $avatarToStore,
             ':last_message_at' => $group['last_message_at'],
             ':id' => $groupId,
         ]);
@@ -133,12 +138,13 @@ function upsertGroup(PDO $pdo, array $group, bool $preserveName = false): int
     }
 
     $insert = $pdo->prepare(
-        'INSERT INTO groups (wa_id, name, channel, last_message_at) VALUES (:wa_id, :name, :channel, :last_message_at)'
+        'INSERT INTO groups (wa_id, name, channel, avatar_url, last_message_at) VALUES (:wa_id, :name, :channel, :avatar_url, :last_message_at)'
     );
     $insert->execute([
         ':wa_id' => $group['wa_id'],
         ':name' => $nameToStore,
         ':channel' => $group['channel'],
+        ':avatar_url' => $avatarToStore,
         ':last_message_at' => $group['last_message_at'],
     ]);
 
@@ -151,8 +157,8 @@ function upsertGroup(PDO $pdo, array $group, bool $preserveName = false): int
 function storeMessage(PDO $pdo, int $groupId, array $message): void
 {
     $insert = $pdo->prepare(
-        'INSERT INTO messages (group_id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at, media_path, media_mime, media_size, media_duration, media_caption, media_original_name, raw_payload)
-         VALUES (:group_id, :wa_message_id, :sender_name, :sender_phone, :message_type, :message_body, :is_from_me, :sent_at, :media_path, :media_mime, :media_size, :media_duration, :media_caption, :media_original_name, :raw_payload)'
+        'INSERT INTO messages (group_id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at, media_path, media_mime, media_size, media_duration, media_caption, media_original_name, media_url, raw_payload)
+         VALUES (:group_id, :wa_message_id, :sender_name, :sender_phone, :message_type, :message_body, :is_from_me, :sent_at, :media_path, :media_mime, :media_size, :media_duration, :media_caption, :media_original_name, :media_url, :raw_payload)'
     );
 
     $insert->execute([
@@ -170,6 +176,7 @@ function storeMessage(PDO $pdo, int $groupId, array $message): void
         ':media_duration' => $message['media_duration'] ?? null,
         ':media_caption' => $message['media_caption'] ?? null,
         ':media_original_name' => $message['media_original_name'] ?? null,
+        ':media_url' => $message['media_url'] ?? null,
         ':raw_payload' => json_encode($message['raw_payload'], JSON_UNESCAPED_UNICODE),
     ]);
 
@@ -193,12 +200,27 @@ function ensureMessagesMediaColumns(PDO $pdo): void
         'media_duration' => 'ALTER TABLE messages ADD COLUMN media_duration INTEGER',
         'media_caption' => 'ALTER TABLE messages ADD COLUMN media_caption TEXT',
         'media_original_name' => 'ALTER TABLE messages ADD COLUMN media_original_name TEXT',
+        'media_url' => 'ALTER TABLE messages ADD COLUMN media_url TEXT',
     ];
 
     foreach ($migrations as $name => $sql) {
         if (!isset($columns[$name])) {
             $pdo->exec($sql);
         }
+    }
+}
+
+function ensureGroupsAvatarColumn(PDO $pdo): void
+{
+    $columns = [];
+    foreach ($pdo->query('PRAGMA table_info(groups)') as $column) {
+        if (isset($column['name'])) {
+            $columns[$column['name']] = true;
+        }
+    }
+
+    if (!isset($columns['avatar_url'])) {
+        $pdo->exec('ALTER TABLE groups ADD COLUMN avatar_url TEXT');
     }
 }
 
@@ -226,6 +248,7 @@ function databaseSchemaDefinition(): string
             wa_id TEXT NOT NULL UNIQUE,
             name TEXT,
             channel TEXT,
+            avatar_url TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_message_at TEXT
@@ -247,6 +270,7 @@ function databaseSchemaDefinition(): string
             media_duration INTEGER,
             media_caption TEXT,
             media_original_name TEXT,
+            media_url TEXT,
             raw_payload TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE

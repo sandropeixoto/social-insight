@@ -401,6 +401,13 @@ body {
     font-size: 20px;
 }
 
+.group-item__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+}
+
 .group-item__avatar--group {
     background: linear-gradient(135deg, #00a884, #29c6ae);
 }
@@ -479,6 +486,31 @@ body {
     border-bottom: 1px solid #202c33;
     background: #202c33;
     color: #d1d7db;
+}
+
+.conversation__header-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.conversation__header-avatar {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #00a884, #29c6ae);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    color: #fff;
+    overflow: hidden;
+}
+
+.conversation__header-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .conversation__header .placeholder {

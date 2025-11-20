@@ -100,37 +100,21 @@ try {
                 );
 
                 $isFromMe = isOutgoingMessage($message);
-
+                $isGroupChat = isGroupConversationId($conversationId);
                 $groupName = resolveGroupName($message, $contacts, $conversationId, $isFromMe, $value);
+                $avatarUrl = resolveAvatarUrl($message, $contacts, $value, $conversationId, $isGroupChat);
 
                 $groupId = upsertGroup($pdo, [
                     'wa_id' => $conversationId,
                     'name' => $groupName,
                     'channel' => $channelIdentifier,
+                    'avatar_url' => $avatarUrl,
                     'last_message_at' => $sentAt,
                 ], true);
 
                 $messageData = normalizeMessage($message, $contacts);
                 $messageData['sent_at'] = $sentAt;
-
-                if (!empty($messageData['media']) && is_array($messageData['media'])) {
-                    $persisted = persistMediaAttachment($messageData['media'], $conversationId, $sentAt, $messageData['wa_message_id'] ?? null);
-
-                    if ($persisted) {
-                        $messageData['media_path'] = $persisted['relative_path'];
-                        $messageData['media_mime'] = $persisted['mime'];
-                        $messageData['media_size'] = $persisted['size'];
-                        $messageData['media_duration'] = $persisted['duration'];
-                        $messageData['media_caption'] = $persisted['caption'];
-                        $messageData['media_original_name'] = $persisted['original_name'];
-
-                        if (($messageData['message_body'] ?? '') === '' && $persisted['caption']) {
-                            $messageData['message_body'] = $persisted['caption'];
-                        }
-                    }
-                }
-
-                unset($messageData['media']);
+                $messageData = hydrateMediaMetadata($messageData);
 
                 storeMessage($pdo, $groupId, $messageData);
             }
@@ -268,6 +252,32 @@ function resolveGroupName(array $message, array $contacts, string $conversationI
 }
 
 /**
+ * Attempts to resolve a conversation avatar URL.
+ */
+function resolveAvatarUrl(array $message, array $contacts, array $context, string $conversationId, bool $isGroup): ?string
+{
+    $candidates = [
+        $message['chat']['profilePicture'] ?? null,
+        $context['chat']['profilePicture'] ?? null,
+        $contacts[$conversationId]['profilePicture'] ?? null,
+        $contacts[$conversationId]['profile']['picture'] ?? null,
+    ];
+
+    if (!$isGroup) {
+        $candidates[] = $message['sender']['profilePicture'] ?? null;
+        $candidates[] = $context['sender']['profilePicture'] ?? null;
+    }
+
+    foreach ($candidates as $candidate) {
+        if (is_string($candidate) && trim($candidate) !== '') {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
+/**
  * Builds the message array expected by the persistence layer.
  */
 function normalizeMessage(array $message, array $contacts): array
@@ -324,6 +334,27 @@ function normalizeMessage(array $message, array $contacts): array
         'raw_payload' => $message,
         'media' => $mediaAttachment,
     ];
+}
+
+/**
+ * Applies consistent media metadata to the normalized message array.
+ */
+function hydrateMediaMetadata(array $messageData): array
+{
+    $media = $messageData['media'] ?? null;
+
+    if (is_array($media) && !empty($media)) {
+        $messageData['media_url'] = $media['url'] ?? null;
+        $messageData['media_caption'] = $media['caption'] ?? null;
+        $messageData['media_mime'] = $media['mime'] ?? null;
+        $messageData['media_size'] = $media['size'] ?? null;
+        $messageData['media_duration'] = $media['duration'] ?? null;
+        $messageData['media_original_name'] = $media['filename'] ?? null;
+    }
+
+    unset($messageData['media']);
+
+    return $messageData;
 }
 
 function isOutgoingMessage(array $message): bool
@@ -600,152 +631,6 @@ function resolveMediaUrl(array $payload): ?string
     return $url ?: null;
 }
 
-function decryptWhatsAppMedia(string $binary, array $media): ?string
-{
-    $mediaKeyBase64 = $media['media_key'] ?? null;
-    if (!$mediaKeyBase64) {
-        return null;
-    }
-
-    $mediaKey = base64_decode($mediaKeyBase64, true);
-
-    if ($mediaKey === false) {
-        return null;
-    }
-
-    $type = strtolower((string) ($media['type'] ?? 'media'));
-    $infoMap = [
-        'image' => 'WhatsApp Image Keys',
-        'audio' => 'WhatsApp Audio Keys',
-        'video' => 'WhatsApp Video Keys',
-        'document' => 'WhatsApp Document Keys',
-        'sticker' => 'WhatsApp Image Keys',
-    ];
-
-    $info = $infoMap[$type] ?? 'WhatsApp Media Keys';
-
-    $derived = hkdfSHA256($mediaKey, 112, $info);
-
-    if ($derived === null) {
-        return null;
-    }
-
-    $iv = substr($derived, 0, 16);
-    $cipherKey = substr($derived, 16, 32);
-    $macKey = substr($derived, 48, 32);
-
-    if (strlen($binary) <= 10) {
-        return null;
-    }
-
-    $mac = substr($binary, -10);
-    $ciphertext = substr($binary, 0, -10);
-
-    $calcMac = substr(hash_hmac('sha256', $ciphertext . $iv, $macKey, true), 0, 10);
-
-    if (!hash_equals($mac, $calcMac)) {
-        return null;
-    }
-
-    $plaintext = openssl_decrypt($ciphertext, 'aes-256-cbc', $cipherKey, OPENSSL_RAW_DATA, $iv);
-
-    if ($plaintext === false) {
-        return null;
-    }
-
-    return $plaintext;
-}
-
-function hkdfSHA256(string $ikm, int $length, string $info = '', ?string $salt = null): ?string
-{
-    $hashLength = 32;
-    $salt = $salt ?? str_repeat("\0", $hashLength);
-    $prk = hash_hmac('sha256', $ikm, $salt, true);
-
-    $blocks = (int) ceil($length / $hashLength);
-    $okm = '';
-    $previous = '';
-
-    for ($block = 1; $block <= $blocks; $block++) {
-        $previous = hash_hmac('sha256', $previous . $info . chr($block), $prk, true);
-        $okm .= $previous;
-    }
-
-    return substr($okm, 0, $length);
-}
-
-/**
- * Persists a downloaded attachment to disk.
- */
-function persistMediaAttachment(?array $media, string $conversationId, string $sentAt, ?string $messageId): ?array
-{
-    if (!$media || empty($media['url'])) {
-        return null;
-    }
-
-    $root = defined('MEDIA_STORAGE_PATH') ? MEDIA_STORAGE_PATH : (__DIR__ . '/../../data/media');
-
-    try {
-        $binary = downloadMediaFile($media['url']);
-    } catch (Throwable $exception) {
-        error_log('Failed to download media: ' . $exception->getMessage());
-        return null;
-    }
-
-    if (env_bool('MEDIA_DECRYPT_WHATSAPP', true)) {
-        $decrypted = decryptWhatsAppMedia($binary, $media);
-
-        if ($decrypted !== null) {
-            $binary = $decrypted;
-        }
-    }
-
-    try {
-        $timestamp = new DateTimeImmutable($sentAt);
-    } catch (Throwable $exception) {
-        $timestamp = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-    }
-
-    $year = $timestamp->format('Y');
-    $month = $timestamp->format('m');
-    $safeConversation = sanitizeConversationPath($conversationId);
-
-    $relativeDirectory = $year . '/' . $month . '/' . $safeConversation;
-    $absoluteDirectory = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $relativeDirectory;
-
-    if (!is_dir($absoluteDirectory) && !mkdir($absoluteDirectory, 0775, true) && !is_dir($absoluteDirectory)) {
-        error_log('Unable to create media directory: ' . $absoluteDirectory);
-        return null;
-    }
-
-    $sequence = nextMediaSequence($absoluteDirectory);
-    $extension = guessExtensionFromMime($media['mime'] ?? '') ?? 'bin';
-    $baseName = $timestamp->format('Ymd_His');
-
-    if ($messageId) {
-        $baseName .= '_' . substr(preg_replace('/[^a-f0-9]/i', '', $messageId), 0, 6);
-    }
-
-    $fileName = sprintf('%s-%s.%s', $baseName, str_pad((string) $sequence, 4, '0', STR_PAD_LEFT), $extension);
-    $absolutePath = $absoluteDirectory . DIRECTORY_SEPARATOR . $fileName;
-
-    if (file_put_contents($absolutePath, $binary) === false) {
-        error_log('Unable to write media file: ' . $absolutePath);
-        return null;
-    }
-
-    $detectedMime = mime_content_type($absolutePath) ?: ($media['mime'] ?? 'application/octet-stream');
-
-    return [
-        'relative_path' => trim($relativeDirectory . '/' . $fileName, '/'),
-        'absolute_path' => $absolutePath,
-        'mime' => $detectedMime,
-        'size' => @filesize($absolutePath) ?: $media['size'] ?? null,
-        'duration' => $media['duration'] ?? null,
-        'caption' => $media['caption'] ?? null,
-        'original_name' => $media['filename'] ?? null,
-    ];
-}
 
 /**
  * Downloads a remote file using cURL.
@@ -785,69 +670,4 @@ function downloadMediaFile(string $url): string
     }
 
     return $result;
-}
-
-function sanitizeConversationPath(string $identifier): string
-{
-    $sanitized = preg_replace('/[^a-zA-Z0-9_-]/', '_', $identifier);
-
-    return trim($sanitized, '_') ?: 'conversation';
-}
-
-function nextMediaSequence(string $directory): int
-{
-    $max = 0;
-
-    if (is_dir($directory)) {
-        $iterator = new FilesystemIterator($directory, FilesystemIterator::SKIP_DOTS);
-
-        foreach ($iterator as $file) {
-            $name = $file->getFilename();
-
-            if (preg_match('/-(\d{4})\.[^.]+$/', $name, $matches)) {
-                $max = max($max, (int) $matches[1]);
-            }
-        }
-    }
-
-    return $max + 1;
-}
-
-function guessExtensionFromMime(?string $mime): ?string
-{
-    if (!$mime) {
-        return null;
-    }
-
-    $map = [
-        'image/jpeg' => 'jpg',
-        'image/png' => 'png',
-        'image/gif' => 'gif',
-        'image/webp' => 'webp',
-        'audio/ogg' => 'ogg',
-        'audio/opus' => 'opus',
-        'audio/mpeg' => 'mp3',
-        'audio/amr' => 'amr',
-        'audio/aac' => 'aac',
-        'video/mp4' => 'mp4',
-        'application/pdf' => 'pdf',
-    ];
-
-    if (isset($map[$mime])) {
-        return $map[$mime];
-    }
-
-    if (str_starts_with($mime, 'image/')) {
-        return substr($mime, 6);
-    }
-
-    if (str_starts_with($mime, 'audio/')) {
-        return substr($mime, 6);
-    }
-
-    if (str_starts_with($mime, 'video/')) {
-        return substr($mime, 6);
-    }
-
-    return null;
 }

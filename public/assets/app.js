@@ -6,6 +6,7 @@
         filteredGroups: [],
         selectedGroupId: null,
         selectedGroupName: null,
+        selectedGroupAvatar: null,
         refreshGroupsInterval: null,
         refreshMessagesInterval: null,
         refreshInstanceInterval: null,
@@ -507,7 +508,15 @@
             const avatar = document.createElement('div');
             avatar.className = 'group-item__avatar';
             avatar.classList.add(isGroup ? 'group-item__avatar--group' : 'group-item__avatar--contact');
-            avatar.textContent = buildInitials(normalizeGroupName(group, true));
+
+            if (group.avatar_url) {
+                const img = document.createElement('img');
+                img.src = group.avatar_url;
+                img.alt = `Foto de ${group.name}`;
+                avatar.appendChild(img);
+            } else {
+                avatar.textContent = buildInitials(normalizeGroupName(group, true));
+            }
 
             const details = document.createElement('div');
             details.className = 'group-item__details';
@@ -556,10 +565,17 @@
             return;
         }
 
+        const avatar = state.selectedGroupAvatar
+            ? `<img src="${state.selectedGroupAvatar}" alt="Avatar do contato/grupo">`
+            : `<span>${buildInitials(state.selectedGroupName ?? '')}</span>`;
+
         elements.chatHeader.innerHTML = `
-            <div>
-                <h2>${state.selectedGroupName ?? 'Grupo'}</h2>
-                <p>Monitoramento em tempo real - Atualize para sincronizar</p>
+            <div class="conversation__header-info">
+                <div class="conversation__header-avatar">${avatar}</div>
+                <div>
+                    <h2>${state.selectedGroupName ?? 'Grupo'}</h2>
+                    <p>Monitoramento em tempo real - Atualize para sincronizar</p>
+                </div>
             </div>`;
     }
 
@@ -634,7 +650,9 @@
         }
 
         state.selectedGroupId = groupId;
-        state.selectedGroupName = state.groups.find(group => group.id === groupId)?.name ?? null;
+        const selected = state.groups.find(group => group.id === groupId);
+        state.selectedGroupName = selected?.name ?? null;
+        state.selectedGroupAvatar = selected?.avatar_url ?? null;
         state.lastMessagesError = null;
 
         renderGroups();

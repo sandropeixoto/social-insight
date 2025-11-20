@@ -114,6 +114,7 @@ function fetchStoredGroups(PDO $pdo, ?string $connectedPhone): array
             g.wa_id,
             g.name,
             g.channel,
+            g.avatar_url,
             g.last_message_at,
             (
                 SELECT message_body
@@ -487,6 +488,7 @@ function formatGroupForResponse(array $group): array
         'wa_id' => $group['wa_id'],
         'name' => resolveDisplayName($group, $type),
         'channel' => $group['channel'],
+        'avatar_url' => $group['avatar_url'] ?? null,
         'type' => $type,
         'is_group' => $type === 'group',
         'last_message_body' => $group['last_message_body'],
