@@ -1,4 +1,11 @@
 <?php
+session_start();
+
+if (!isset($_SESSION['user_id'])) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized']);
+    exit;
+}
 
 require_once __DIR__ . '/../../bootstrap.php';
 
@@ -24,16 +31,42 @@ if (!$groupRow) {
     exit;
 }
 
-$query = $pdo->prepare(
-    'SELECT id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at,
-            media_path, media_mime, media_size, media_duration, media_caption, media_original_name, media_url
-     FROM messages
-     WHERE group_id = :group_id
-     ORDER BY sent_at ASC, id ASC'
-);
-$query->execute([':group_id' => $groupId]);
+$sinceId = filter_input(INPUT_GET, 'since_id', FILTER_VALIDATE_INT);
+$timeout = 25; // seconds
+$pollingInterval = 1; // second
 
-$messages = $query->fetchAll();
+$startTime = time();
+
+while (time() - $startTime < $timeout) {
+    $sql = 'SELECT id, wa_message_id, sender_name, sender_phone, message_type, message_body, is_from_me, sent_at,
+                   media_path, media_mime, media_size, media_duration, media_caption, media_original_name, media_url
+            FROM messages
+            WHERE group_id = :group_id';
+
+    $params = [':group_id' => $groupId];
+
+    if ($sinceId) {
+        $sql .= ' AND id > :since_id';
+        $params[':since_id'] = $sinceId;
+    }
+
+    $sql .= ' ORDER BY sent_at ASC, id ASC';
+
+    $query = $pdo->prepare($sql);
+    $query->execute($params);
+    $messages = $query->fetchAll();
+
+    if (!empty($messages)) {
+        break;
+    }
+
+    // If it's the initial load (no since_id), don't wait.
+    if (!$sinceId) {
+        break;
+    }
+
+    sleep($pollingInterval);
+}
 
 echo json_encode([
     'group' => [

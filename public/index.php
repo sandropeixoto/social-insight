@@ -1,4 +1,10 @@
 <?php
+session_start();
+
+if (!isset($_SESSION['user_id'])) {
+    header('Location: login.php');
+    exit;
+}
 
 require_once __DIR__ . '/../config.php';
 
@@ -19,6 +25,9 @@ require_once __DIR__ . '/../config.php';
                     <h1>Social Insight</h1>
                     <p>Monitoramento de grupos WhatsApp</p>
                 </div>
+                <form action="api/logout.php" method="POST" class="logout-form">
+                    <button type="submit" class="logout-button" title="Sair">Sair</button>
+                </form>
             </header>
             <section class="sidebar__instance" data-collapsed="false">
                 <div class="sidebar__instance-header">

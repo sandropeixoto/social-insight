@@ -350,6 +350,16 @@ function hydrateMediaMetadata(array $messageData): array
         $messageData['media_size'] = $media['size'] ?? null;
         $messageData['media_duration'] = $media['duration'] ?? null;
         $messageData['media_original_name'] = $media['filename'] ?? null;
+
+        if (env_bool('MEDIA_DOWNLOAD_ENABLED', false) && !empty($media['url'])) {
+            try {
+                $fileContent = downloadMediaFile($media['url']);
+                $relativePath = storeMediaFile($fileContent, $media['mime'] ?? 'application/octet-stream');
+                $messageData['media_path'] = $relativePath;
+            } catch (Throwable $exception) {
+                error_log('Failed to download media for ' . ($messageData['wa_message_id'] ?? 'unknown') . ': ' . $exception->getMessage());
+            }
+        }
     }
 
     unset($messageData['media']);
@@ -631,6 +641,44 @@ function resolveMediaUrl(array $payload): ?string
     return $url ?: null;
 }
 
+/**
+ * Stores media content and returns the relative path.
+ */
+function storeMediaFile(string $content, string $mime): string
+{
+    $directory = MEDIA_STORAGE_PATH;
+    $extension = getExtensionForMimeType($mime);
+    $filename = bin2hex(random_bytes(16)) . '.' . $extension;
+    $path = $directory . DIRECTORY_SEPARATOR . $filename;
+
+    if (file_put_contents($path, $content) === false) {
+        throw new RuntimeException('Unable to write media file to ' . $path);
+    }
+
+    return $filename;
+}
+
+/**
+ * Returns a file extension for a given mime type.
+ */
+function getExtensionForMimeType(string $mime): string
+{
+    static $map = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'audio/aac' => 'aac',
+        'audio/mp4' => 'm4a',
+        'audio/mpeg' => 'mp3',
+        'audio/amr' => 'amr',
+        'audio/ogg' => 'ogg',
+        'video/mp4' => 'mp4',
+        'application/pdf' => 'pdf',
+    ];
+
+    return $map[$mime] ?? 'bin';
+}
 
 /**
  * Downloads a remote file using cURL.
