@@ -640,7 +640,8 @@
             bubble.className = 'message';
             bubble.classList.add(message.is_from_me ? 'is-outbound' : 'is-inbound');
 
-            const hasMedia = Boolean(message.media_path || message.media_url);
+            const media = message.media ?? null;
+            const hasMedia = Boolean(media || message.media_path || message.media_url);
 
             if (message.message_type && message.message_type !== 'text') {
                 bubble.classList.add('is-attachment');
@@ -652,7 +653,7 @@
             bubble.appendChild(author);
 
             if (hasMedia) {
-                const mediaElement = createMediaElement(message);
+                const mediaElement = createMediaElement(message, media);
                 if (mediaElement) {
                     bubble.classList.add('message--has-media');
                     bubble.appendChild(mediaElement);
@@ -1066,7 +1067,7 @@
             return '';
         }
 
-        return value.length > max ? `${value.slice(0, max)}â€¦` : value;
+        return value.length > max ? `${value.slice(0, max)}...` : value;
     }
 
     function normalizeGroupName(group, preserveCase = false) {
@@ -1133,17 +1134,18 @@
         return haystack.includes(term);
     }
 
-    function createMediaElement(message) {
-        const mediaUrl = message.media_path
-            ? `api/media.php?file=${encodeURIComponent(message.media_path)}`
-            : message.media_url;
+    function createMediaElement(message, mediaPayload) {
+        const media = mediaPayload ?? message.media ?? null;
+        const mediaUrl = media?.url
+            ?? (message.media_path ? `media.php?path=${encodeURIComponent(message.media_path)}` : null)
+            ?? message.media_url;
 
         if (!mediaUrl) {
             return null;
         }
 
-        const mime = (message.media_mime || '').toLowerCase();
-        const type = (message.message_type || '').toLowerCase();
+        const mime = (media?.mime || message.media_mime || '').toLowerCase();
+        const type = (media?.type || message.message_type || '').toLowerCase();
 
         if (mime.startsWith('audio/') || type === 'audio') {
             const audio = document.createElement('audio');
@@ -1156,7 +1158,7 @@
 
         const img = document.createElement('img');
         img.src = mediaUrl;
-        img.alt = message.media_original_name ?? 'Arquivo de mídia';
+        img.alt = media?.original_name ?? message.media_original_name ?? 'Arquivo de mídia';
         img.loading = 'lazy';
         img.className = 'message__media message__media--image';
 
