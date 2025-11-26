@@ -7,8 +7,9 @@
         selectedGroupId: null,
         selectedGroupName: null,
         selectedGroupAvatar: null,
+        lastMessageId: null,
+        messagePollingController: null,
         refreshGroupsInterval: null,
-        refreshMessagesInterval: null,
         refreshInstanceInterval: null,
         lastGroupsError: null,
         lastMessagesError: null,
@@ -117,30 +118,69 @@
         }
     }
 
-    async function loadMessages(groupId) {
+    function startMessagePolling(groupId) {
+        if (state.messagePollingController) {
+            state.messagePollingController.abort();
+        }
+
         if (!groupId) {
             return;
         }
 
-        try {
-            const url = new URL(endpoints.messages, window.location.href);
-            url.searchParams.set('group_id', groupId);
+        state.messagePollingController = new AbortController();
+        const signal = state.messagePollingController.signal;
 
-            const response = await fetch(url, { credentials: 'same-origin' });
+        let initialLoad = true;
 
-            if (!response.ok) {
-                throw new Error(`Erro ao carregar mensagens: ${response.status} ${response.statusText}`);
+        const poll = async () => {
+            if (signal.aborted) {
+                return;
             }
 
-            const payload = await response.json();
-            state.selectedGroupName = payload.group?.name ?? state.selectedGroupName;
-            state.lastMessagesError = null;
+            try {
+                const url = new URL(endpoints.messages, window.location.href);
+                url.searchParams.set('group_id', groupId);
 
-            renderHeader();
-            renderMessages(payload.data ?? []);
-        } catch (error) {
-            handleMessagesError(error);
-        }
+                if (state.lastMessageId) {
+                    url.searchParams.set('since_id', state.lastMessageId);
+                }
+
+                const response = await fetch(url, { signal, credentials: 'same-origin' });
+
+                if (!response.ok) {
+                    throw new Error(`Erro ao carregar mensagens: ${response.status} ${response.statusText}`);
+                }
+
+                const payload = await response.json();
+                state.selectedGroupName = payload.group?.name ?? state.selectedGroupName;
+
+                const newMessages = payload.data ?? [];
+
+                if (initialLoad) {
+                    renderMessages(newMessages, true);
+                    initialLoad = false;
+                } else if (newMessages.length > 0) {
+                    renderMessages(newMessages, false);
+                }
+
+                if (newMessages.length > 0) {
+                    state.lastMessageId = newMessages[newMessages.length - 1].id;
+                }
+
+                state.lastMessagesError = null;
+                renderHeader();
+
+                poll(); // Schedule the next poll immediately
+            } catch (error) {
+                if (!signal.aborted) {
+                    handleMessagesError(error);
+                    // Retry after a delay
+                    setTimeout(poll, 5000);
+                }
+            }
+        };
+
+        poll();
     }
 
     async function loadInstanceStatus() {
@@ -579,8 +619,8 @@
             </div>`;
     }
 
-    function renderMessages(messages) {
-        if (!messages.length) {
+    function renderMessages(messages, isInitialLoad = false) {
+        if (isInitialLoad && !messages.length) {
             const text = state.lastMessagesError
                 ? `<strong>Erro ao carregar mensagens</strong><br>${state.lastMessagesError}`
                 : 'Nenhuma mensagem registrada neste grupo ate o momento.';
@@ -593,13 +633,14 @@
         }
 
         const fragment = document.createDocumentFragment();
+        const shouldScroll = elements.messageList.scrollHeight - elements.messageList.scrollTop <= elements.messageList.clientHeight + 1;
 
         messages.forEach(message => {
             const bubble = document.createElement('article');
             bubble.className = 'message';
             bubble.classList.add(message.is_from_me ? 'is-outbound' : 'is-inbound');
 
-            const hasMedia = Boolean(message.media && message.media.url);
+            const hasMedia = Boolean(message.media_path || message.media_url);
 
             if (message.message_type && message.message_type !== 'text') {
                 bubble.classList.add('is-attachment');
@@ -640,8 +681,15 @@
             fragment.appendChild(bubble);
         });
 
-        elements.messageList.replaceChildren(fragment);
-        elements.messageList.scrollTop = elements.messageList.scrollHeight;
+        if (isInitialLoad) {
+            elements.messageList.replaceChildren(fragment);
+        } else {
+            elements.messageList.appendChild(fragment);
+        }
+
+        if (shouldScroll) {
+            elements.messageList.scrollTop = elements.messageList.scrollHeight;
+        }
     }
 
     function selectGroup(groupId) {
@@ -654,16 +702,13 @@
         state.selectedGroupName = selected?.name ?? null;
         state.selectedGroupAvatar = selected?.avatar_url ?? null;
         state.lastMessagesError = null;
+        state.lastMessageId = null;
 
         renderGroups();
         renderHeader();
+        renderMessages([], true); // Clear the message list
 
-        if (state.refreshMessagesInterval) {
-            clearInterval(state.refreshMessagesInterval);
-        }
-
-        loadMessages(groupId);
-        state.refreshMessagesInterval = setInterval(() => loadMessages(groupId), 5000);
+        startMessagePolling(groupId);
     }
 
     function handleGroupsError(error) {
@@ -1089,27 +1134,29 @@
     }
 
     function createMediaElement(message) {
-        const media = message.media;
+        const mediaUrl = message.media_path
+            ? `api/media.php?file=${encodeURIComponent(message.media_path)}`
+            : message.media_url;
 
-        if (!media || !media.url) {
+        if (!mediaUrl) {
             return null;
         }
 
-        const mime = (media.mime || '').toLowerCase();
+        const mime = (message.media_mime || '').toLowerCase();
         const type = (message.message_type || '').toLowerCase();
 
         if (mime.startsWith('audio/') || type === 'audio') {
             const audio = document.createElement('audio');
             audio.controls = true;
             audio.preload = 'metadata';
-            audio.src = media.url;
+            audio.src = mediaUrl;
             audio.className = 'message__media message__media--audio';
             return audio;
         }
 
         const img = document.createElement('img');
-        img.src = media.url;
-        img.alt = media.original_name ?? 'Arquivo de mídia';
+        img.src = mediaUrl;
+        img.alt = message.media_original_name ?? 'Arquivo de mídia';
         img.loading = 'lazy';
         img.className = 'message__media message__media--image';
 
